@@ -21,6 +21,31 @@ The service test uses the real binaries with an inherited listener supplied by a
 local test harness. It checks protocol rejection and explicit missing-cgroup
 reporting, not systemd activation. Run tests as a non-root user on Linux 6.5+.
 
+## Continuous integration
+
+GitHub Actions runs **Rust checks** and **VM acceptance** on pull requests and
+pushes to `main`; manual runs are also supported. Both jobs use the compiler,
+dependencies, and OS pinned by `flake.lock`, without updating either lockfile:
+
+```sh
+nix build --no-update-lock-file -L .#checks.x86_64-linux.rust
+nix build --no-update-lock-file -L .#checks.x86_64-linux.service
+```
+
+The Rust derivation builds the package, checks formatting, type-checks every
+target, runs Clippy with warnings denied, runs the supplemental tests, and validates
+the workflow with actionlint.
+The VM job requires working KVM and executes the entire acceptance suite below.
+Missing KVM is a failed job, never a skipped security test. Jobs run independently,
+have 45-minute timeouts, and retain build logs for 14 days, including on failure.
+Actions are pinned to immutable commits; PR jobs receive only read permissions
+and do not require repository secrets or privileged `pull_request_target` events.
+
+Maintainers should require **Rust checks** and **VM acceptance** in the `main`
+branch ruleset before merging. The workflow reports these checks but does not
+configure repository-level branch protection itself. A green run is regression
+evidence for the experimental contract, not production certification.
+
 ## Primary acceptance suite
 
 On an x86_64 Linux host with Nix (flakes enabled) and accessible `/dev/kvm`:
