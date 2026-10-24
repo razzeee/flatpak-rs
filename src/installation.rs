@@ -6,18 +6,145 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+mod lifecycle;
 mod storage;
+pub use lifecycle::{delete_data, list_runtimes, remove_runtime, uninstall};
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 // The service is the only installation writer. Inspection shares its visibility lock.
 static OPERATIONS: Mutex<()> = Mutex::new(());
+static RECOVERED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static RECOVERY_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+/// Remove only a tree owned by the service, never following payload symlinks.
+pub(crate) fn remove_tree(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.is_dir() {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+        for entry in fs::read_dir(path)? {
+            remove_tree(&entry?.path())?;
+        }
+        fs::remove_dir(path)?;
+    } else {
+        fs::remove_file(path)?;
+    }
+    Ok(())
+}
+
+pub fn recover() -> Result<()> {
+    let _lock = OPERATIONS
+        .lock()
+        .map_err(|_| "installation lock poisoned")?;
+    recover_locked()
+}
+
+fn recover_locked() -> Result<()> {
+    let staging = root()?.join(".staging");
+    directory(&staging)?;
+    let mut count = 0;
+    for entry in fs::read_dir(&staging)? {
+        remove_tree(&entry?.path())?;
+        count += 1;
+    }
+    File::open(staging)?.sync_all()?;
+    RECOVERED.store(count, std::sync::atomic::Ordering::Relaxed);
+    RECOVERY_READY.store(true, std::sync::atomic::Ordering::Relaxed);
+    Ok(())
+}
+
+fn ensure_recovered() -> Result<()> {
+    if !RECOVERY_READY.load(std::sync::atomic::Ordering::Relaxed) {
+        recover_locked()?;
+    }
+    Ok(())
+}
+
+pub fn recovered_stages() -> usize {
+    RECOVERED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+fn checkpoint(name: &str) {
+    // Host-side fault injection only: never accepts artifact/request input.
+    if std::env::var("FLATPAK_RS_INSTALL_STOP_AFTER")
+        .ok()
+        .as_deref()
+        == Some(name)
+    {
+        eprintln!("installation checkpoint {name}");
+        // SAFETY: stop this service for the external crash/restart acceptance test.
+        unsafe {
+            libc::raise(libc::SIGSTOP);
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
 #[serde(deny_unknown_fields)]
 pub struct Variant {
     pub collection: String,
     pub id: String,
     pub arch: String,
     pub branch: String,
+}
+
+static RUNNING: std::sync::LazyLock<Mutex<std::collections::HashSet<Variant>>> =
+    std::sync::LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
+
+pub(crate) struct Lease(pub Variant);
+impl Drop for Lease {
+    fn drop(&mut self) {
+        if let Ok(mut running) = RUNNING.lock() {
+            running.remove(&self.0);
+        }
+    }
+}
+
+pub(crate) struct Deployment {
+    pub lease: Lease,
+    pub app: PathBuf,
+    pub runtime: PathBuf,
+    pub home: PathBuf,
+}
+
+pub fn instances() -> Vec<Variant> {
+    RUNNING
+        .lock()
+        .map(|set| set.iter().cloned().collect())
+        .unwrap_or_default()
+}
+
+pub(crate) fn acquire(variant: Variant) -> Result<Deployment> {
+    use std::os::unix::fs::PermissionsExt;
+    let _lock = OPERATIONS
+        .lock()
+        .map_err(|_| "installation lock poisoned")?;
+    variant.validate()?;
+    ensure_recovered()?;
+    let root = root()?;
+    let path = variant.path(&root)?;
+    if !path.try_exists()? {
+        return Err("application variant is not installed".into());
+    }
+    read(&path)?;
+    if !RUNNING
+        .lock()
+        .map_err(|_| "instance lock poisoned")?
+        .insert(variant.clone())
+    {
+        return Err("application variant is already running".into());
+    }
+    let lease = Lease(variant.clone());
+    let data_root = root.join("data");
+    directory(&data_root)?;
+    let home = variant.path(&data_root)?;
+    directory(&home)?;
+    fs::set_permissions(&home, fs::Permissions::from_mode(0o700))?;
+    Ok(Deployment {
+        lease,
+        app: path.join("app/files"),
+        runtime: path.join("runtime/files"),
+        home,
+    })
 }
 
 impl Variant {
@@ -50,7 +177,7 @@ impl Variant {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
 pub struct Revision {
     #[serde(flatten)]
     pub variant: Variant,
@@ -68,6 +195,8 @@ pub struct Installed {
 #[serde(deny_unknown_fields)]
 pub struct Install {
     pub source: PathBuf,
+    #[serde(default)]
+    pub runtime_source: Option<PathBuf>,
     pub app: Variant,
     pub runtime: Variant,
 }
@@ -130,6 +259,7 @@ pub fn inspect(variant: Variant) -> Result<Installed> {
         .lock()
         .map_err(|_| "installation lock poisoned")?;
     variant.validate()?;
+    ensure_recovered()?;
     let path = variant.path(&root()?)?;
     if !path.try_exists()? {
         return Err("application variant is not installed".into());
@@ -143,12 +273,15 @@ pub fn install(request: Install) -> Result<Installed> {
         .map_err(|_| "installation lock poisoned")?;
     request.app.validate()?;
     request.runtime.validate()?;
+    ensure_recovered()?;
     if !request.source.is_absolute() {
         return Err("local source path must be absolute".into());
     }
     let source = storage::Source::open(&request.source)?;
     let app = source.resolve(&request.app, "app")?;
-    let runtime = source.resolve(&request.runtime, "runtime")?;
+    let runtime_source =
+        storage::Source::open(request.runtime_source.as_deref().unwrap_or(&request.source))?;
+    let runtime = runtime_source.resolve(&request.runtime, "runtime")?;
     let root = root()?;
     let destination = request.app.path(&root)?;
     let staging = root.join(".staging");
@@ -160,7 +293,8 @@ pub fn install(request: Install) -> Result<Installed> {
     fs::create_dir(&stage)?;
     let result = (|| -> Result<Installed> {
         let object_path = stage.join("object-repo");
-        let prepared = source.prepare(&[&app.commit, &runtime.commit], &object_path)?;
+        let prepared = source.prepare(&[&app.commit], &object_path)?;
+        runtime_source.import_to(&[&runtime.commit], &prepared)?;
         let app_metadata = prepared.metadata(&app)?;
         let runtime_metadata = prepared.metadata(&runtime)?;
         let diagnostics = storage::validate(&app, &app_metadata, &runtime, &runtime_metadata)?;
@@ -183,6 +317,7 @@ pub fn install(request: Install) -> Result<Installed> {
         }
         prepared.checkout(&selected.app.commit, &stage.join("app"))?;
         prepared.checkout(&selected.runtime.commit, &stage.join("runtime"))?;
+        checkpoint("prepared");
         drop(prepared);
         fs::remove_dir_all(object_path)?;
         let mut file = OpenOptions::new()
@@ -194,6 +329,7 @@ pub fn install(request: Install) -> Result<Installed> {
         File::open(&stage)?.sync_all()?;
         fs::rename(&stage, &destination)?;
         File::open(destination.parent().unwrap())?.sync_all()?;
+        checkpoint("published");
         Ok(selected)
     })();
     // Only our unique, unpublished stage is removed; never follow a source path.

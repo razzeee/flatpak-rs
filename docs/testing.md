@@ -36,8 +36,8 @@ structured host prerequisites, malformed and fragmented Varlink messages,
 unknown methods/parameters, UID and namespace denial, service survival, missing
 user namespace support, and actionable connection failure. Missing KVM/Nix is
 a test infrastructure failure, not a passing test or evidence of confinement.
-VM output and test logs are in the Nix result directory. No upstream Flatpak
-test code is reused; the original suite covers service/bootstrap behavior.
+VM output and test logs are in the Nix result directory. See the
+[acceptance map and provenance](milestone-acceptance.md) for exact scenario reuse.
 
 Issue #3 adds CLI-to-real-service installation and inspection tests using
 payload-bearing app/runtime repositories prepared independently with reference
@@ -60,20 +60,20 @@ black-box suite or upstream Flatpak test scripts. No external test code is copie
 reference Flatpak/OSTree executables are used only for fixture preparation and
 independent observations. This does not imply Flatpak CLI compatibility.
 
-Still outside this ticket: crash-injected recovery/staging reclamation (#4),
-launch and denied-access probes, runtime-removal protection, uninstall/data
-retention, supervision, syscall/mount policy and cgroup enforcement on apps.
-Those tests remain required in the dependent milestone tickets.
-
-No apps are launched. Successful prerequisite reporting does **not** validate
-namespace/mount setup, syscall policy, descriptor isolation, cgroup enforcement
-on apps, permissions, or any other sandbox guarantee. Those require later
-end-to-end acceptance tests and must fail closed when implemented.
+The same VM check also runs crash-injected recovery, confined fixture execution,
+foreground streams/cancellation, instance limits and cleanup, uninstall/runtime
+dependency protection, and persistent-data deletion. Actual mount/seccomp denial,
+disabled namespaces/delegation, descriptor misuse and permission-forward-compatibility
+cases verify fail-closed behavior. Successful prerequisite reporting alone is
+**not** evidence of sandbox enforcement. The VM uses `vm.panic_on_oom=0` so a
+deliberate per-instance OOM exercises scoped killing rather than the harness's
+compulsory panic policy. Launch rejects host `vm.panic_on_oom=2`.
 
 ## Manual experimental installation
 
 Build with `cargo build --release --locked`. Install `flatpak-rs` on your PATH
-and `flatpak-rs-service` at `/usr/libexec/flatpak-rs-service`, or change the
+and `flatpak-rs-service` at `/usr/libexec/flatpak-rs-service`, with
+`flatpak-rs-sandbox` alongside the service, or change the
 service unit's absolute ExecStart path to your installed binary. Install both
 files in `systemd/` to `~/.config/systemd/user/`, then:
 
@@ -105,9 +105,31 @@ flatpak-rs inspect org.example.Collection org.example.Fixture x86_64 stable
 
 Both return JSON containing complete app/runtime selections, exact commits, and
 ignored-permission diagnostics. Runtime architecture is the app architecture;
-this single-source operation requires both selected collections to match the
-local repository's collection ID. Neither a source path nor collection ID
+the default single-source operation requires both selected collections to match
+the local repository's collection ID. Supply `--runtime-source /absolute/path`
+for an explicitly selected provider in another collection. Neither a source path nor collection ID
 authenticates a publisher. The service stores deployments under its own
 `$XDG_DATA_HOME/flatpak-rs` (default `~/.local/share/flatpak-rs`), independently
 of reference Flatpak installations. The CLI environment does not reconfigure an
 already-running service's data directory. No app is executed by these commands.
+
+## Confined foreground execution and lifecycle
+
+```sh
+flatpak-rs run org.example.Collection org.example.Fixture x86_64 stable \
+  --memory-mib 256 --pids 64 -- /app/bin/fixture
+flatpak-rs instances
+flatpak-rs uninstall org.example.Collection org.example.Fixture x86_64 stable
+flatpak-rs delete-data org.example.Collection org.example.Fixture x86_64 stable
+flatpak-rs runtimes
+flatpak-rs remove-runtime org.example.Collection org.example.Platform x86_64 stable
+```
+
+Run returns the command's status (130 on client cancellation); stdout/stderr carry
+payload bytes, not JSON. No TTY is allocated. Ctrl-C, disconnect and client death
+stop the complete instance. Defaults are 256 MiB/64 processes; accepted ranges
+are 16–1024 MiB/4–256 processes, with swap disabled. Only one instance per variant
+may run. Uninstall retains data and runtimes; deleting data is separate and
+runtime removal rejects installed dependents. Management commands return JSON.
+
+These interfaces implement an experimental demonstrator, not production readiness.

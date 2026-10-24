@@ -1,7 +1,9 @@
 { pkgs, package }:
 let fixtures = pkgs.runCommand "flatpak-rs-install-fixtures" {
-  nativeBuildInputs = [ pkgs.flatpak pkgs.ostree ];
+  nativeBuildInputs = [ pkgs.flatpak pkgs.ostree pkgs.pkgsStatic.stdenv.cc ];
   FIXTURE_SHELL = "${pkgs.pkgsStatic.busybox}/bin/busybox";
+  FIXTURE_PROBE_SOURCE = ./fixture-probe.c;
+  FIXTURE_CC = "${pkgs.pkgsStatic.stdenv.cc}/bin/${pkgs.pkgsStatic.stdenv.cc.targetPrefix}cc";
 } ''
   export HOME="$TMPDIR"
   sh ${./prepare-install-fixtures.sh} "$out"
@@ -10,6 +12,9 @@ let fixtures = pkgs.runCommand "flatpak-rs-install-fixtures" {
   nodes.machine = { ... }: {
     virtualisation.memorySize = 2048;
     virtualisation.cores = 2;
+    # The test harness defaults to compulsory panic-on-OOM, including memcg OOM.
+    # Exercise normal cgroup-scoped OOM killing instead, without removing limits.
+    boot.kernel.sysctl."vm.panic_on_oom" = pkgs.lib.mkForce 0;
     users.users.alice = { isNormalUser = true; uid = 1000; linger = true; };
     users.users.bob = { isNormalUser = true; uid = 1001; };
     environment.systemPackages = [ package pkgs.python3 pkgs.util-linux pkgs.flatpak ];
@@ -17,6 +22,20 @@ let fixtures = pkgs.runCommand "flatpak-rs-install-fixtures" {
     systemd.user.sockets.flatpak-rs.wantedBy = [ "sockets.target" ];
     environment.etc."varlink-probe.py".source = ./varlink-probe.py;
     environment.etc."install-fixtures".source = fixtures;
+    environment.etc."foreground-probe.py".source = ./foreground-probe.py;
+    environment.etc."instance-probe.py".source = ./instance-probe.py;
+    environment.etc."lifecycle-probe.py".source = ./lifecycle-probe.py;
+    environment.etc."execution-ipc-probe.py".source = ./execution-ipc-probe.py;
+    environment.etc."deny-mount.conf".text = ''
+      [Service]
+      SystemCallFilter=~mount
+      SystemCallErrorNumber=EPERM
+    '';
+    environment.etc."deny-seccomp.conf".text = ''
+      [Service]
+      SystemCallFilter=~seccomp
+      SystemCallErrorNumber=EPERM
+    '';
     environment.etc."no-cgroup.conf".text = ''
       [Service]
       Delegate=no
@@ -32,6 +51,12 @@ let fixtures = pkgs.runCommand "flatpak-rs-install-fixtures" {
 
     def alice(command):
         return "su - alice -c " + shlex.quote("export XDG_RUNTIME_DIR=/run/user/1000; " + command)
+
+    def refused_run(expected):
+        command = "flatpak-rs run org.example.Collection org.example.Fixture x86_64 stable -- /app/bin/probe baseline 2>&1"
+        code, output = machine.execute(alice(command))
+        assert code != 0 and expected in output and "confined" not in output, (code, output)
+        assert json.loads(machine.succeed(alice("flatpak-rs instances")))["instances"] == []
 
     machine.wait_until_succeeds(alice("systemctl --user is-active flatpak-rs.socket"))
     machine.fail(alice("systemctl --user is-active flatpak-rs.service"))
@@ -63,6 +88,9 @@ let fixtures = pkgs.runCommand "flatpak-rs-install-fixtures" {
     machine.succeed(alice("flatpak-rs status"))
 
     exec(${builtins.toJSON (builtins.readFile ./install-vm.py)})
+    exec(${builtins.toJSON (builtins.readFile ./recovery-vm.py)})
+    exec(${builtins.toJSON (builtins.readFile ./execution-vm.py)})
+    exec(${builtins.toJSON (builtins.readFile ./security-vm.py)})
 
     # Required capability missing: actionable structured failure, never success.
     machine.succeed("sysctl -w user.max_user_namespaces=0")
@@ -71,6 +99,7 @@ let fixtures = pkgs.runCommand "flatpak-rs-install-fixtures" {
     missing = json.loads(output)
     assert not missing["ready"]
     assert any(c["name"] == "user_namespaces" and not c["available"] and "enable" in c["detail"] for c in missing["checks"])
+    refused_run("user namespace")
     machine.succeed("sysctl -w user.max_user_namespaces=10000")
 
     machine.succeed("install -D -o alice /etc/no-cgroup.conf /home/alice/.config/systemd/user/flatpak-rs.service.d/no-cgroup.conf")
@@ -80,6 +109,7 @@ let fixtures = pkgs.runCommand "flatpak-rs-install-fixtures" {
     assert code == 2, (code, output)
     missing = json.loads(output)
     assert any(c["name"] == "cgroup_control" and not c["available"] and "Delegate=" in c["detail"] for c in missing["checks"])
+    refused_run("cgroup")
 
     machine.succeed(alice("systemctl --user stop flatpak-rs.service flatpak-rs.socket"))
     code, output = machine.execute(alice("flatpak-rs status 2>&1"))

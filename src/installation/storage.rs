@@ -7,6 +7,10 @@ pub(super) struct Source(ostree::Repo);
 
 impl Source {
     pub(super) fn open(path: &Path) -> Result<Self> {
+        use std::os::unix::ffi::OsStrExt;
+        if !path.is_absolute() || path.as_os_str().as_bytes().contains(&0) {
+            return Err("local source path must be absolute and contain no NUL bytes".into());
+        }
         let repo = ostree::Repo::new(&gio::File::for_path(path));
         repo.open(gio::Cancellable::NONE)?;
         Ok(Self(repo))
@@ -32,6 +36,12 @@ impl Source {
     pub(super) fn prepare(&self, commits: &[&str], destination: &Path) -> Result<Self> {
         let repo = ostree::Repo::new(&gio::File::for_path(destination));
         repo.create(ostree::RepoMode::BareUserOnly, gio::Cancellable::NONE)?;
+        let prepared = Self(repo);
+        self.import_to(commits, &prepared)?;
+        Ok(prepared)
+    }
+
+    pub(super) fn import_to(&self, commits: &[&str], destination: &Self) -> Result<()> {
         let options = glib::VariantDict::new(None);
         options.insert("refs", commits);
         // libostree's option schema requires signed int32, not GFlags' uint32.
@@ -43,13 +53,13 @@ impl Source {
         // A file URI, never a remote nickname: no remote discovery or provider
         // inference. UNTRUSTED verifies imported objects instead of hardlinking
         // and trusting a local repository merely because it is local.
-        repo.pull_with_options(
+        destination.0.pull_with_options(
             &self.0.path().uri(),
             &options.end(),
             None,
             gio::Cancellable::NONE,
         )?;
-        Ok(Self(repo))
+        Ok(())
     }
 
     pub(super) fn metadata(&self, revision: &Revision) -> Result<glib::KeyFile> {

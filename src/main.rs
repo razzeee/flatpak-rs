@@ -4,6 +4,9 @@ use std::time::Duration;
 
 fn run() -> Result<i32, Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("run") {
+        return flatpak_rs::execution_client::run(&args[1..]);
+    }
     let variant = |fields: &[String]| {
         serde_json::json!({
             "collection": fields[0], "id": fields[1], "arch": fields[2], "branch": fields[3]
@@ -11,12 +14,18 @@ fn run() -> Result<i32, Box<dyn std::error::Error>> {
     };
     let (method, parameters) = match args.first().map(String::as_str) {
         Some("status") if args.len() == 1 => ("GetHostStatus", serde_json::json!({})),
+        Some("recovery-status") if args.len() == 1 => ("GetRecoveryStatus", serde_json::json!({})),
+        Some("instances") if args.len() == 1 => ("ListInstances", serde_json::json!({})),
+        Some("runtimes") if args.len() == 1 => ("ListRuntimes", serde_json::json!({})),
+        Some("uninstall" | "delete-data" | "remove-runtime") if args.len() == 5 => (
+            match args[0].as_str() { "uninstall" => "Uninstall", "delete-data" => "DeleteData", _ => "RemoveRuntime" }, variant(&args[1..5])),
         Some("inspect") if args.len() == 5 => ("Inspect", variant(&args[1..5])),
-        Some("install") if args.len() == 9 => ("Install", serde_json::json!({
+        Some("install") if args.len() == 9 || (args.len() == 11 && args[9] == "--runtime-source") => ("Install", serde_json::json!({
             "source": args[1], "app": variant(&args[2..6]),
+            "runtime_source": if args.len() == 11 { Some(&args[10]) } else { None },
             "runtime": {"collection": args[6], "id": args[7], "arch": args[4], "branch": args[8]}
         })),
-        _ => return Err("usage: flatpak-rs status | inspect COLLECTION APP ARCH BRANCH | install SOURCE COLLECTION APP ARCH BRANCH RUNTIME_COLLECTION RUNTIME RUNTIME_BRANCH (experimental; no execution)".into()),
+        _ => return Err("usage: flatpak-rs status | recovery-status | instances | runtimes | inspect/uninstall/delete-data/remove-runtime COLLECTION ID ARCH BRANCH | install SOURCE COLLECTION APP ARCH BRANCH RUNTIME_COLLECTION RUNTIME RUNTIME_BRANCH [--runtime-source PATH] | run COLLECTION APP ARCH BRANCH [--memory-mib N] [--pids N] -- COMMAND [ARG...] (experimental; strict confinement only)".into()),
     };
     let path = flatpak_rs::socket_path()?;
     let mut stream = UnixStream::connect(&path).map_err(|e| {
@@ -57,6 +66,17 @@ fn run() -> Result<i32, Box<dyn std::error::Error>> {
                 } else {
                     2
                 }
+            } else if [
+                "GetRecoveryStatus",
+                "ListInstances",
+                "ListRuntimes",
+                "Uninstall",
+                "DeleteData",
+                "RemoveRuntime",
+            ]
+            .contains(&method)
+            {
+                0
             } else {
                 let _: flatpak_rs::installation::Installed =
                     serde_json::from_value(parameters.clone())?;

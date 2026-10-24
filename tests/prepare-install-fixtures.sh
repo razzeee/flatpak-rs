@@ -10,6 +10,7 @@ command=fixture
 EOF
 printf '#!/usr/bin/sh\necho fixture\n' > "$out/app/files/bin/fixture"
 chmod +x "$out/app/files/bin/fixture"
+"$FIXTURE_CC" -static -O2 "$FIXTURE_PROBE_SOURCE" -o "$out/app/files/bin/probe"
 cat > "$out/runtime/metadata" <<'EOF'
 [Runtime]
 name=org.example.Platform
@@ -20,6 +21,16 @@ printf 'independently prepared runtime payload\n' > "$out/runtime/usr/payload"
 cp "${FIXTURE_SHELL:?supply a static busybox fixture shell}" "$out/runtime/usr/bin/sh"
 flatpak build-finish "$out/app"
 flatpak build-finish "$out/runtime"
+# These tiny disposable fixture repositories need a fixed reserve, not 3% of
+# the build host's entire filesystem. Production repositories keep their policy.
+for repo in repo other standalone; do
+    ostree --repo="$out/$repo" init --mode=archive
+    ostree --repo="$out/$repo" config set core.min-free-space-percent 0
+    ostree --repo="$out/$repo" config set core.min-free-space-size 256MB
+done
+ostree --repo="$out/repo" config set core.collection-id org.example.Collection
+ostree --repo="$out/other" config set core.collection-id org.example.OtherCollection
+ostree --repo="$out/standalone" config set core.collection-id org.example.Standalone
 flatpak build-export --disable-sandbox --collection-id=org.example.Collection "$out/repo" "$out/app" stable
 flatpak build-export --disable-sandbox --runtime --collection-id=org.example.Collection "$out/repo" "$out/runtime" stable
 ostree --repo="$out/repo" rev-parse app/org.example.Fixture/x86_64/stable > "$out/app-commit"
@@ -72,6 +83,9 @@ cp -a "$out/repo" "$out/mirror"
 flatpak build-export --disable-sandbox --collection-id=org.example.OtherCollection \
     --metadata="$out/base-metadata" "$out/other" "$out/app" stable
 flatpak build-export --disable-sandbox --runtime --collection-id=org.example.OtherCollection "$out/other" "$out/runtime" stable
+flatpak build-export --disable-sandbox --collection-id=org.example.OtherCollection \
+    --metadata="$out/base-metadata" "$out/other" "$out/app" shared-runtime
+flatpak build-export --disable-sandbox --runtime --collection-id=org.example.Standalone "$out/standalone" "$out/runtime" stable
 
 cp -a "$out/repo" "$out/update-app"
 printf '\necho changed-app\n' >> "$out/app/files/bin/fixture"
@@ -85,6 +99,8 @@ flatpak build-export --disable-sandbox --runtime --collection-id=org.example.Col
 # advertised checksum. The service must not silently install this under that ID.
 export_app corrupt
 ostree --repo="$out/corrupt" init --mode=bare-user-only --collection-id=org.example.Collection
+ostree --repo="$out/corrupt" config set core.min-free-space-percent 0
+ostree --repo="$out/corrupt" config set core.min-free-space-size 256MB
 ostree --repo="$out/corrupt" pull-local "$out/repo" app/org.example.Fixture/x86_64/corrupt runtime/org.example.Platform/x86_64/stable
 payload=$(ostree --repo="$out/corrupt" ls -C app/org.example.Fixture/x86_64/corrupt /files/bin/fixture | awk '{print $5}')
 prefix=$(printf '%s' "$payload" | cut -c1-2)
@@ -103,6 +119,9 @@ mv "$out/symlink-tree/metadata-file" "$out/symlink-tree/metadata"
 ln -s /home/alice/untouched "$out/symlink-tree/files/outside"
 ostree --repo="$out/repo" commit --branch=app/org.example.Fixture/x86_64/payload-symlink --tree=dir="$out/symlink-tree"
 export_app unpublished
+ln -s /home/alice/outside "$out/app/files/recovery-escape"
+export_app recovery-prepared
+export_app recovery-published
 
 cp "$out/base-metadata" "$out/many-permissions-metadata"
 printf '\n[Context]\n' >> "$out/many-permissions-metadata"

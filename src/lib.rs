@@ -1,9 +1,13 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+pub mod execution;
+pub mod execution_client;
 pub mod host;
 pub mod installation;
+pub mod sandbox;
 pub mod service;
+mod wire;
 
 pub const MAX_MESSAGE: usize = 64 * 1024;
 

@@ -6,6 +6,7 @@ default-run = "flatpak-rs"
 
 [dependencies]
 libc = "0.2"
+hex = "0.4"
 ostree = { version = "0.20.5", features = ["v2019_3"] }
 gio = "0.20"
 glib = "0.20"

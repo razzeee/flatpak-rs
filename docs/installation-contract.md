@@ -11,8 +11,10 @@ selects `app/APP/ARCH/BRANCH` and `runtime/RUNTIME/ARCH/RUNTIME_BRANCH`.
 commits and permission diagnostics as JSON. Runtime architecture is explicitly
 the selected app architecture. Only the host-native architecture is accepted.
 The source repository's collection ID must match both explicitly supplied
-collections; this first local-source operation consumes one repository, not a
-runtime provider inferred from its name. Mirrors with the same collection work.
+collections when using one repository. `--runtime-source PATH` explicitly selects
+a second local runtime repository when the provider is in another collection;
+its own collection ID must match the selected runtime. A provider is never
+inferred from a runtime name. Mirrors with the same collection preserve identity.
 
 libostree opens and resolves the local repository, imports the pinned objects
 as untrusted input into private staging, verifies their checksums/structure,
@@ -44,8 +46,13 @@ update. The source path is not persisted as identity.
 
 Ordinary errors attempt to remove this operation's staging; cleanup failures
 leave only unpublished state. Abrupt termination can likewise leave
-unpublished staging, which is never inspectable or runnable. Automated crash
-injection and restart-time reclamation belong to dependent recovery work (#4).
+unpublished staging, which is never inspectable or runnable. On restart the
+service removes abandoned staging before accepting requests; cleanup does not
+follow symlinks and handles read-only directories. `recovery-status` reports
+the number discarded at startup. The VM uses the host-only environment setting
+`FLATPAK_RS_INSTALL_STOP_AFTER=prepared|published` to stop the daemon at a
+boundary, then externally kills it. This is fault injection, never an
+artifact/request-controlled execution mode.
 There is no launch operation in #3; future launch must consume only published
 deployments and independently establish the full confinement contract.
 

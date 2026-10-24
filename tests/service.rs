@@ -41,6 +41,7 @@ impl Service {
             ])
             .env("LISTEN_FDS", "1")
             .env("XDG_RUNTIME_DIR", &runtime)
+            .env("XDG_DATA_HOME", runtime.join("data"))
             .stdin(Stdio::null());
         let fd = listener.as_raw_fd();
         // SAFETY: only async-signal-safe descriptor operations run after fork.
@@ -119,6 +120,29 @@ fn real_service_rejects_invalid_requests_and_remains_available() {
     // Invalid request shape is rejected immediately, not kept as an idle session.
     assert_eq!(malformed.read(&mut [0]).unwrap(), 0);
     assert!(service.child.try_wait().unwrap().is_none());
+
+    let mut optional = service.connect();
+    let request = serde_json::json!({"method": "org.flatpakrs.Manager.Run", "more": true,
+        "parameters": {"variant": {"collection": "org.example.Collection", "id": "org.example.Missing",
+        "arch": std::env::consts::ARCH, "branch": "stable"}, "command": ["/app/bin/missing"],
+        "memory_mib": null, "pids": null}});
+    optional
+        .write_all(&serde_json::to_vec(&request).unwrap())
+        .unwrap();
+    optional.write_all(&[0]).unwrap();
+    let reply: Vec<u8> = BufReader::new(&mut optional)
+        .bytes()
+        .map(Result::unwrap)
+        .take_while(|b| *b != 0)
+        .collect();
+    let reply: serde_json::Value = serde_json::from_slice(&reply).unwrap();
+    assert!(
+        reply["parameters"]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("not installed"),
+        "{reply}"
+    );
 
     let output = Command::new(env!("CARGO_BIN_EXE_flatpak-rs"))
         .arg("status")
