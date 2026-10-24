@@ -88,6 +88,17 @@ fn real_service_rejects_invalid_requests_and_remains_available() {
         "org.flatpakrs.Manager"
     );
 
+    client
+        .write_all(b"{\"method\":\"org.flatpakrs.Manager.Install\",\"parameters\":{}}\0")
+        .unwrap();
+    let reply: Vec<u8> = BufReader::new(&mut client)
+        .bytes()
+        .map(Result::unwrap)
+        .take_while(|b| *b != 0)
+        .collect();
+    let reply: serde_json::Value = serde_json::from_slice(&reply).unwrap();
+    assert_eq!(reply["error"], "org.varlink.service.InvalidParameter");
+
     client.write_all(b"{\"method\":\"org.varlink.service.GetInfo\",\"parameters\":[],\"oneway\":true}\0{\"method\":\"org.varlink.service.GetInfo\"}\0").unwrap();
     let mut reply = Vec::new();
     for byte in BufReader::new(&mut client).bytes() {

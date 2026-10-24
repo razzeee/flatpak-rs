@@ -123,6 +123,14 @@ fn dispatch(request: Value) -> Option<Value> {
             )
         }
         "org.flatpakrs.Manager.GetHostStatus" => json!({"parameters": crate::host::status()}),
+        "org.flatpakrs.Manager.Install" => operation::<crate::installation::Install, _>(
+            Value::Object(parameters.clone()),
+            crate::installation::install,
+        ),
+        "org.flatpakrs.Manager.Inspect" => operation::<crate::installation::Variant, _>(
+            Value::Object(parameters.clone()),
+            crate::installation::inspect,
+        ),
         "org.varlink.service.GetInfo" => json!({"parameters": {
             "vendor": "flatpak-rs contributors", "product": "flatpak-rs experimental management service",
             "version": env!("CARGO_PKG_VERSION"), "url": "https://github.com/razzeee/flatpak-rs",
@@ -149,6 +157,22 @@ fn dispatch(request: Value) -> Option<Value> {
         }
     };
     Some(response)
+}
+
+fn operation<T: serde::de::DeserializeOwned, R: serde::Serialize>(
+    parameters: Value,
+    run: impl FnOnce(T) -> Result<R, Box<dyn std::error::Error>>,
+) -> Value {
+    match serde_json::from_value(parameters) {
+        Err(_) => error("InvalidParameter", json!({"parameter": "parameters"})),
+        Ok(request) => match run(request) {
+            Ok(result) => json!({"parameters": result}),
+            Err(e) => {
+                let detail: String = e.to_string().chars().take(2048).collect();
+                json!({"error": "org.flatpakrs.Manager.OperationFailed", "parameters": {"detail": detail}})
+            }
+        },
+    }
 }
 
 fn serve(mut stream: UnixStream) -> io::Result<()> {

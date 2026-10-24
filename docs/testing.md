@@ -4,6 +4,8 @@ Linux only; Rust with edition 2024 support (1.85+), systemd 254+ (for
 `DelegateSubgroup`), Linux 6.5+ (for `SO_PEERPIDFD`), unified cgroup v2 with
 memory/pids controllers, and unprivileged user namespaces are required.
 The pinned Nix environment supplies the tested compiler and operating system.
+Native builds additionally require libostree and GLib/GIO development packages
+and pkg-config (for example `ostree-devel glib2-devel pkgconf-pkg-config` on Fedora).
 
 ```sh
 cargo build --locked
@@ -35,7 +37,33 @@ unknown methods/parameters, UID and namespace denial, service survival, missing
 user namespace support, and actionable connection failure. Missing KVM/Nix is
 a test infrastructure failure, not a passing test or evidence of confinement.
 VM output and test logs are in the Nix result directory. No upstream Flatpak
-tests have been adapted yet; this is only service/bootstrap coverage.
+test code is reused; the original suite covers service/bootstrap behavior.
+
+Issue #3 adds CLI-to-real-service installation and inspection tests using
+payload-bearing app/runtime repositories prepared independently with reference
+`flatpak build-finish` / `flatpak build-export`. Exact expected commits are
+obtained with reference `ostree rev-parse`, not calculated by flatpak-rs.
+See [the installation contract](installation-contract.md) for publication and
+interruption semantics. Fixture preparation disables only the reference exporter's
+icon-validator sandbox (there are no icons); this is not an execution mode in
+flatpak-rs. The VM's immutable source also checks that installation need not
+write into the input repository.
+
+The installation suite checks collection/branch separation, mirror identity,
+explicit runtime compatibility, missing refs, exact app/runtime commits,
+idempotence, rejection of app/runtime updates, non-native architecture, structural
+requirements, permission compatibility, corrupt objects, metadata/payload symlinks,
+unpublished failed preparations, persistence across an ordinary service restart,
+and unchanged reference installation inventory. These are project-specific
+acceptance scenarios for the parent spec, not executions of the external
+black-box suite or upstream Flatpak test scripts. No external test code is copied;
+reference Flatpak/OSTree executables are used only for fixture preparation and
+independent observations. This does not imply Flatpak CLI compatibility.
+
+Still outside this ticket: crash-injected recovery/staging reclamation (#4),
+launch and denied-access probes, runtime-removal protection, uninstall/data
+retention, supervision, syscall/mount policy and cgroup enforcement on apps.
+Those tests remain required in the dependent milestone tickets.
 
 No apps are launched. Successful prerequisite reporting does **not** validate
 namespace/mount setup, syscall policy, descriptor isolation, cgroup enforcement
@@ -63,3 +91,23 @@ The socket lives at `$XDG_RUNTIME_DIR/flatpak-rs/management.sock`. The daemon
 refuses manual startup without the systemd listener. Exit codes: 0 = prerequisites
 available, 2 = missing prerequisites (JSON diagnostics), 1 = connection/protocol/
 usage failure. All interfaces are experimental and deliberately local-only.
+
+## Local artifact installation (experimental)
+
+With the socket enabled, select every identity component explicitly:
+
+```sh
+flatpak-rs install /absolute/path/to/repo \
+  org.example.Collection org.example.Fixture x86_64 stable \
+  org.example.Collection org.example.Platform stable
+flatpak-rs inspect org.example.Collection org.example.Fixture x86_64 stable
+```
+
+Both return JSON containing complete app/runtime selections, exact commits, and
+ignored-permission diagnostics. Runtime architecture is the app architecture;
+this single-source operation requires both selected collections to match the
+local repository's collection ID. Neither a source path nor collection ID
+authenticates a publisher. The service stores deployments under its own
+`$XDG_DATA_HOME/flatpak-rs` (default `~/.local/share/flatpak-rs`), independently
+of reference Flatpak installations. The CLI environment does not reconfigure an
+already-running service's data directory. No app is executed by these commands.

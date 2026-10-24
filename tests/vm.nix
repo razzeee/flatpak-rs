@@ -1,15 +1,22 @@
 { pkgs, package }:
-pkgs.testers.runNixOSTest {
+let fixtures = pkgs.runCommand "flatpak-rs-install-fixtures" {
+  nativeBuildInputs = [ pkgs.flatpak pkgs.ostree ];
+  FIXTURE_SHELL = "${pkgs.pkgsStatic.busybox}/bin/busybox";
+} ''
+  export HOME="$TMPDIR"
+  sh ${./prepare-install-fixtures.sh} "$out"
+''; in pkgs.testers.runNixOSTest {
   name = "flatpak-rs-service";
   nodes.machine = { ... }: {
     virtualisation.memorySize = 2048;
     virtualisation.cores = 2;
     users.users.alice = { isNormalUser = true; uid = 1000; linger = true; };
     users.users.bob = { isNormalUser = true; uid = 1001; };
-    environment.systemPackages = [ package pkgs.python3 pkgs.util-linux ];
+    environment.systemPackages = [ package pkgs.python3 pkgs.util-linux pkgs.flatpak ];
     systemd.packages = [ package ];
     systemd.user.sockets.flatpak-rs.wantedBy = [ "sockets.target" ];
     environment.etc."varlink-probe.py".source = ./varlink-probe.py;
+    environment.etc."install-fixtures".source = fixtures;
     environment.etc."no-cgroup.conf".text = ''
       [Service]
       Delegate=no
@@ -54,6 +61,8 @@ pkgs.testers.runNixOSTest {
     machine.succeed("chmod 600 /run/user/1000/flatpak-rs/management.sock")
     assert machine.succeed(alice("systemctl --user show flatpak-rs.service -p MainPID --value")).strip() == pid
     machine.succeed(alice("flatpak-rs status"))
+
+    exec(${builtins.toJSON (builtins.readFile ./install-vm.py)})
 
     # Required capability missing: actionable structured failure, never success.
     machine.succeed("sysctl -w user.max_user_namespaces=0")

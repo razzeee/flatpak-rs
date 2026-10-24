@@ -4,3 +4,11 @@ interface org.flatpakrs.Manager
 type Check (name: string, available: bool, detail: string)
 
 method GetHostStatus() -> (ready: bool, checks: []Check)
+
+type Variant (collection: string, id: string, arch: string, branch: string)
+type Revision (collection: string, id: string, arch: string, branch: string, commit: string)
+
+method Install(source: string, app: Variant, runtime: Variant) -> (app: Revision, runtime: Revision, diagnostics: []string)
+method Inspect(collection: string, id: string, arch: string, branch: string) -> (app: Revision, runtime: Revision, diagnostics: []string)
+
+error OperationFailed(detail: string)

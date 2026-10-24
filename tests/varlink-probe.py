@@ -50,6 +50,9 @@ else:
         ({"method": "org.flatpakrs.Manager.GetHostStatus", "parameters": []}, "InvalidParameter"),
         ({"method": "org.flatpakrs.Manager.GetHostStatus", "more": True}, "InvalidParameter"),
         ({"method": "org.flatpakrs.Manager.GetHostStatus", "upgrade": True}, "InvalidParameter"),
+        ({"method": "org.flatpakrs.Manager.Install", "parameters": {}}, "InvalidParameter"),
+        ({"method": "org.flatpakrs.Manager.Install", "parameters": {"source": 1, "app": {}, "runtime": {}}}, "InvalidParameter"),
+        ({"method": "org.flatpakrs.Manager.Inspect", "parameters": {"collection": "org.example.Collection", "id": "org.example.Fixture", "arch": "x86_64", "branch": "stable", "unexpected": True}}, "InvalidParameter"),
     ]:
         assert call(request)["error"] == "org.varlink.service." + error
     for payload in [b"not JSON\0", b"{\0", b"x" * 65537, b"[1,2,3]\0"]:
