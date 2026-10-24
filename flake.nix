@@ -1,0 +1,28 @@
+{
+  description = "Experimental flatpak-rs CLI, service, and Linux VM acceptance test";
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/02c087f3fe673c9e317f206a627cb6b910336dbe";
+  outputs = { self, nixpkgs }: let
+    system = "x86_64-linux";
+    pkgs = import nixpkgs { inherit system; };
+    package = pkgs.rustPlatform.buildRustPackage {
+      pname = "flatpak-rs";
+      version = "0.1.0";
+      src = pkgs.lib.cleanSource ./.;
+      cargoLock.lockFile = ./Cargo.lock;
+      # Real-process tests may consult user-session tools; isolate their HOME.
+      preCheck = ''
+        export HOME="$TMPDIR/test-home"
+        mkdir -p "$HOME"
+      '';
+      postInstall = ''
+        mkdir -p $out/lib/systemd/user
+        cp systemd/flatpak-rs.socket $out/lib/systemd/user/
+        substitute systemd/flatpak-rs.service $out/lib/systemd/user/flatpak-rs.service \
+          --replace-fail /usr/libexec/flatpak-rs-service $out/bin/flatpak-rs-service
+      '';
+    };
+  in {
+    packages.${system}.default = package;
+    checks.${system}.service = import ./tests/vm.nix { inherit pkgs package; };
+  };
+}

@@ -1,0 +1,13 @@
+[Unit]
+Description=Experimental flatpak-rs per-user management service
+Requires=flatpak-rs.socket
+After=flatpak-rs.socket
+
+[Service]
+ExecStart=/usr/libexec/flatpak-rs-service
+Delegate=memory pids
+DelegateSubgroup=supervisor
+KillMode=control-group
+TimeoutStopSec=5
+NoNewPrivileges=yes
+UMask=0077

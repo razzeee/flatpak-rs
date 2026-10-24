@@ -1,0 +1,6 @@
+# Experimental: not a stable public API. No sandbox is constructed by this call.
+interface org.flatpakrs.Manager
+
+type Check (name: string, available: bool, detail: string)
+
+method GetHostStatus() -> (ready: bool, checks: []Check)
