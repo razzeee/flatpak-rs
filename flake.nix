@@ -25,6 +25,18 @@
     };
   in {
     packages.${system}.default = package;
-    checks.${system}.service = import ./tests/vm.nix { inherit pkgs package; };
+    checks.${system} = {
+      rust = package.overrideAttrs (old: {
+        pname = "flatpak-rs-rust-checks";
+        nativeBuildInputs = old.nativeBuildInputs ++ [ pkgs.rustfmt pkgs.clippy pkgs.actionlint ];
+        postBuild = ''
+          actionlint .github/workflows/ci.yml
+          cargo fmt --all -- --check
+          cargo check --locked --all-targets
+          cargo clippy --locked --all-targets -- -D warnings
+        '';
+      });
+      service = import ./tests/vm.nix { inherit pkgs package; };
+    };
   };
 }

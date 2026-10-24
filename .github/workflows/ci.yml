@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Rust checks
+            check: rust
+          - name: VM acceptance
+            check: service
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # 31.11.3
+        with:
+          enable_kvm: ${{ matrix.check == 'service' }}
+
+      - name: Verify KVM is usable
+        if: matrix.check == 'service'
+        shell: bash
+        run: |
+          mkdir -p ci-logs
+          python3 - <<'PY' 2>&1 | tee ci-logs/kvm.log
+          import fcntl
+          import os
+          fd = os.open("/dev/kvm", os.O_RDWR | os.O_CLOEXEC)
+          try:
+              version = fcntl.ioctl(fd, 0xAE00)  # KVM_GET_API_VERSION
+              assert version == 12, f"Unexpected KVM API version: {version}"
+              print("KVM is accessible; VM acceptance is required, not skipped.")
+          finally:
+              os.close(fd)
+          PY
+
+      - name: Build and test
+        shell: bash
+        env:
+          CHECK: ${{ matrix.check }}
+        run: |
+          mkdir -p ci-logs
+          nix build --no-update-lock-file --print-build-logs \
+            ".#checks.x86_64-linux.${CHECK}" 2>&1 | tee ci-logs/build.log
+
+      - name: Retain check logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-${{ matrix.check }}-logs
+          path: ci-logs/
+          retention-days: 14
+          if-no-files-found: warn
