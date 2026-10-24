@@ -1,0 +1,3 @@
+# Target Flatpak Next with explicit compatibility choices
+
+flatpak-rs will explore the Flatpak Next direction rather than aim to be a drop-in Rust replacement for Flatpak 1, allowing architectural changes without inheriting every existing interface contract. The [LAS 2026 talk](https://www.youtube.com/watch?v=NsVhkz2Xl0E), using the transcript supplied in the design discussion, is input to decisions rather than a fixed specification; compatibility will be chosen per feature, and existing test suites will supply selectively reusable coverage rather than define the entire contract. The first milestone is a small end-to-end installation-and-execution demonstrator with explicit limitations; its precise workflow remains to be decided.
