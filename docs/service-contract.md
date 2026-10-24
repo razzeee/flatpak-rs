@@ -27,7 +27,8 @@ against deliberate delegation by trusted host-side same-user code is out of scop
 The management listener, accepted streams, pidfds, and proc handles are
 close-on-exec (standard input/output/error are deliberately preserved). No descriptors are
 received/transferred by this protocol; ancillary descriptors are discarded by
-ordinary stream reads. No application execution is implemented in this ticket.
+ordinary stream reads. Execution and lifecycle extend this bootstrap contract
+as specified in [the execution contract](execution-contract.md).
 
 ## Wire and failures
 
@@ -39,6 +40,9 @@ use standard Varlink errors. Reject malformed JSON, unsupported streaming/
 upgrade flags, and messages over 64 KiB. Each connection has a bounded idle
 timeout; the service handles clients concurrently with a bounded connection count.
 An unauthorized peer is disconnected before dispatch (no privileged operation).
+`Run` is the sole streaming exception: it owns its connection until completion,
+with connection-scoped input/control calls rather than a second management
+dispatcher. Its output backpressure and cancellation follow the execution contract.
 
 Checks report Linux user-namespace creation (in a short-lived child), systemd
 user-manager reachability, cgroup v2, and delegated memory/pids controller

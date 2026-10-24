@@ -93,8 +93,7 @@ fn user_namespaces() -> Result<String, String> {
     }
 }
 
-fn cgroup_control() -> io::Result<String> {
-    static NEXT: AtomicU64 = AtomicU64::new(0);
+pub(crate) fn delegation_root() -> io::Result<std::path::PathBuf> {
     let membership = fs::read_to_string("/proc/self/cgroup")?;
     let relative = membership
         .lines()
@@ -129,6 +128,12 @@ fn cgroup_control() -> io::Result<String> {
     {
         fs::write(parent.join("cgroup.subtree_control"), "+memory +pids")?;
     }
+    Ok(parent.to_path_buf())
+}
+
+fn cgroup_control() -> io::Result<String> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let parent = delegation_root()?;
     let probe = parent.join(format!(
         "probe-{}-{}",
         std::process::id(),

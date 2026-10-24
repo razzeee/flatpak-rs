@@ -4,3 +4,22 @@ interface org.flatpakrs.Manager
 type Check (name: string, available: bool, detail: string)
 
 method GetHostStatus() -> (ready: bool, checks: []Check)
+method GetRecoveryStatus() -> (discarded_stages: int)
+
+type Variant (collection: string, id: string, arch: string, branch: string)
+type Revision (collection: string, id: string, arch: string, branch: string, commit: string)
+method ListInstances() -> (instances: []Variant)
+# Streaming Run owns its connection; input/control calls are oneway on that connection.
+method Run(variant: Variant, command: []string, memory_mib: ?int, pids: ?int) -> (kind: string, data: ?string, exit_status: ?int)
+method WriteInput(data: string) -> ()
+method CloseInput() -> ()
+method Cancel() -> ()
+
+method Install(source: string, app: Variant, runtime: Variant, runtime_source: ?string) -> (app: Revision, runtime: Revision, diagnostics: []string)
+method Inspect(collection: string, id: string, arch: string, branch: string) -> (app: Revision, runtime: Revision, diagnostics: []string)
+method Uninstall(collection: string, id: string, arch: string, branch: string) -> (removed: bool)
+method DeleteData(collection: string, id: string, arch: string, branch: string) -> (removed: bool)
+method RemoveRuntime(collection: string, id: string, arch: string, branch: string) -> (removed: bool)
+method ListRuntimes() -> (runtimes: []Revision)
+
+error OperationFailed(detail: string)

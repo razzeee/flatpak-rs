@@ -9,6 +9,8 @@
       version = "0.1.0";
       src = pkgs.lib.cleanSource ./.;
       cargoLock.lockFile = ./Cargo.lock;
+      nativeBuildInputs = [ pkgs.pkg-config ];
+      buildInputs = [ pkgs.ostree pkgs.glib ];
       # Real-process tests may consult user-session tools; isolate their HOME.
       preCheck = ''
         export HOME="$TMPDIR/test-home"
