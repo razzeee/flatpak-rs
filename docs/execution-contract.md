@@ -37,6 +37,17 @@ A namespace PID 1 owns the application process tree: its exit kills remaining
 namespace processes. The external setup parent waits for it. No appd identity
 or app-facing host services are provided.
 
+The private `execution::instance` module owns helper startup/enrollment, cgroup
+limits, and the installation lease together. Its interface has three transitions:
+`Instance::start` supplies only the deliberate pipes; consuming `wait` verifies
+process-tree cleanup and returns a `Completion` that still owns the variant;
+consuming `Completion::finish` releases ownership after transport draining and
+before the final exit reply. Early returns use the same scope-owned cleanup
+path, retaining the lease if the cgroup cannot be verified empty. The connection
+module owns framing, input credits, and peer-death monitoring through final reply
+teardown; it does not manipulate the cgroup, helper, or lease directly. The
+CLI/Varlink interface and its acceptance-test seam are unchanged.
+
 ## Filesystems, capabilities and environment
 
 Construct a fresh tmpfs root in the private mount namespace. Bind only prepared

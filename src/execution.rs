@@ -1,40 +1,19 @@
 //! Connection-owned foreground execution. No payload runs outside the helper.
-use crate::{installation, sandbox, wire};
+use crate::{installation, wire};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::fs;
 use std::io::{self, Read, Write};
 use std::net::Shutdown;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
-use std::os::unix::process::{CommandExt, ExitStatusExt};
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicBool, Ordering},
 };
-use std::time::{Duration, Instant};
+use std::time::Duration;
+mod instance;
+use instance::Instance;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
-
-struct Child(std::process::Child);
-impl std::ops::Deref for Child {
-    type Target = std::process::Child;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-impl std::ops::DerefMut for Child {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-impl Drop for Child {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
 
 // Process ownership outlives helper waiting: output and even the final reply
 // can still be backpressured after the app exits. A scope-owned monitor keeps
@@ -86,119 +65,6 @@ pub struct Run {
     pub command: Vec<String>,
     pub memory_mib: Option<u64>,
     pub pids: Option<u64>,
-}
-
-struct Group {
-    path: PathBuf,
-    root: PathBuf,
-}
-impl Group {
-    fn new(memory: u64, pids: u64) -> io::Result<Self> {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        if fs::read_to_string("/proc/sys/vm/panic_on_oom")?.trim() == "2" {
-            return Err(io::Error::other(
-                "vm.panic_on_oom=2 panics even on cgroup OOM; require vm.panic_on_oom=0 or 1",
-            ));
-        }
-        let parent = crate::host::delegation_root()?;
-        let name = format!(
-            "instance-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        );
-        let path = parent.join(&name);
-        let roots = crate::socket_path()
-            .map_err(io::Error::other)?
-            .parent()
-            .unwrap()
-            .join("roots");
-        fs::create_dir_all(&roots)?;
-        let root = roots.join(name);
-        fs::create_dir(&root)?;
-        if let Err(error) = fs::create_dir(&path) {
-            let _ = fs::remove_dir(&root);
-            return Err(error);
-        }
-        let group = Self { path, root };
-        for (file, value) in [
-            ("memory.max", (memory * 1024 * 1024).to_string()),
-            ("pids.max", pids.to_string()),
-            ("memory.swap.max", "0".into()),
-            ("memory.oom.group", "1".into()),
-        ] {
-            fs::write(group.path.join(file), &value)?;
-            if fs::read_to_string(group.path.join(file))?.trim() != value {
-                return Err(io::Error::other("required cgroup limit readback mismatch"));
-            }
-        }
-        fs::write(group.path.join("cgroup.kill"), "1")?;
-        Ok(group)
-    }
-    fn empty(&self) -> bool {
-        fs::read_to_string(self.path.join("cgroup.events"))
-            .is_ok_and(|s| s.lines().any(|l| l == "populated 0"))
-    }
-    fn terminate(&self) -> io::Result<()> {
-        let relative = format!(
-            "/{}",
-            self.path
-                .strip_prefix("/sys/fs/cgroup")
-                .map_err(io::Error::other)?
-                .display()
-        );
-        for pid in fs::read_to_string(self.path.join("cgroup.procs"))?.lines() {
-            let Ok(pid) = pid.parse::<i32>() else {
-                continue;
-            };
-            // SAFETY: pidfd_open pins a process; membership is checked after opening.
-            let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0u32) } as i32;
-            if fd < 0 {
-                continue;
-            }
-            // SAFETY: successful pidfd_open transferred ownership.
-            let fd = unsafe { OwnedFd::from_raw_fd(fd) };
-            if fs::read_to_string(format!("/proc/{pid}/cgroup"))
-                .is_ok_and(|s| s.trim() == format!("0::{relative}"))
-            {
-                // SAFETY: the pidfd cannot be redirected by PID reuse.
-                unsafe {
-                    libc::syscall(
-                        libc::SYS_pidfd_send_signal,
-                        fd.as_raw_fd(),
-                        libc::SIGTERM,
-                        std::ptr::null::<libc::siginfo_t>(),
-                        0u32,
-                    );
-                }
-            }
-        }
-        let deadline = Instant::now() + Duration::from_millis(500);
-        while !self.empty() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        self.kill()
-    }
-    fn kill(&self) -> io::Result<()> {
-        fs::write(self.path.join("cgroup.kill"), "1")?;
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while !self.empty() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        if self.empty() {
-            Ok(())
-        } else {
-            Err(io::Error::other(
-                "instance cgroup did not empty; ownership remains reserved",
-            ))
-        }
-    }
-}
-impl Drop for Group {
-    fn drop(&mut self) {
-        let _ = self.kill();
-        let _ = fs::remove_dir(&self.path);
-        let _ = fs::remove_dir(&self.root);
-    }
 }
 
 struct Output {
@@ -259,70 +125,8 @@ fn start(stream: UnixStream, run: Run) -> Result<()> {
     }
     // SAFETY: successful SO_PEERPIDFD transfers ownership of this descriptor.
     let peer_fd = unsafe { OwnedFd::from_raw_fd(peer_fd) };
-    if run.command.is_empty() || run.command.iter().any(|arg| arg.contains('\0')) {
-        return Err("missing/invalid command".into());
-    }
-    let memory = run.memory_mib.unwrap_or(256);
-    let pids = run.pids.unwrap_or(64);
-    if !(16..=1024).contains(&memory) || !(4..=256).contains(&pids) {
-        return Err("limits require 16–1024 MiB and 4–256 processes".into());
-    }
-    let deployment = installation::acquire(run.variant)?;
-    let group = Group::new(memory, pids).map_err(|e| format!("required cgroup setup: {e}; require Delegate=memory pids and DelegateSubgroup=supervisor"))?;
-    let config = sandbox::Config {
-        app: deployment.app,
-        runtime: deployment.runtime,
-        home: deployment.home,
-        root: group.root.clone(),
-        cgroup: group.path.clone(),
-        command: run.command,
-    };
-    let (mut config_writer, config_reader) = UnixStream::pair()?;
-    let config_fd = config_reader.as_raw_fd();
-    let helper = std::env::current_exe()?.with_file_name("flatpak-rs-sandbox");
-    let mut command = Command::new(helper);
-    command
-        .env_clear()
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    // SAFETY: only async-signal-safe syscalls execute between fork and exec.
-    unsafe {
-        command.pre_exec(move || {
-            if libc::dup2(config_fd, 3) == -1
-                || libc::fcntl(3, libc::F_SETFD, 0) == -1
-                || libc::syscall(libc::SYS_close_range, 4u32, u32::MAX, 4u32) == -1
-            {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    let mut child = Child(command.spawn()?);
-    drop(config_reader);
-    // The helper is blocked reading configuration. Enroll and verify it before
-    // releasing that barrier or publishing "started". Otherwise cancellation
-    // could kill an empty cgroup, then wait forever as the helper joins later.
-    let child_pid = child.id().to_string();
-    fs::write(group.path.join("cgroup.procs"), &child_pid)?;
-    if !fs::read_to_string(group.path.join("cgroup.procs"))?
-        .lines()
-        .any(|pid| pid == child_pid)
-    {
-        return Err("required instance cgroup enrollment failed".into());
-    }
-    config_writer.write_all(&serde_json::to_vec(&config)?)?;
-    drop(config_writer);
-    let input = child.stdin.take().ok_or("missing input pipe")?;
-    // SAFETY: fcntl reads/modifies flags on our owned pipe.
-    unsafe {
-        let flags = libc::fcntl(input.as_raw_fd(), libc::F_GETFL);
-        if flags < 0
-            || libc::fcntl(input.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) == -1
-        {
-            return Err(io::Error::last_os_error().into());
-        }
-    }
+    let (instance, pipes) = Instance::start(run)?;
+    let input = pipes.stdin;
     stream.set_write_timeout(Some(Duration::from_millis(100)))?;
     stream.set_read_timeout(Some(Duration::from_millis(200)))?;
     let cancel = Arc::new(AtomicBool::new(false));
@@ -335,14 +139,8 @@ fn start(stream: UnixStream, run: Run) -> Result<()> {
     event(&sender, json!({"kind": "started"}), true)?;
     let mut pumps = Vec::new();
     for (kind, mut pipe) in [
-        (
-            "stdout",
-            Box::new(child.stdout.take().ok_or("missing stdout")?) as Box<dyn Read + Send>,
-        ),
-        (
-            "stderr",
-            Box::new(child.stderr.take().ok_or("missing stderr")?) as Box<dyn Read + Send>,
-        ),
+        ("stdout", Box::new(pipes.stdout) as Box<dyn Read + Send>),
+        ("stderr", Box::new(pipes.stderr) as Box<dyn Read + Send>),
     ] {
         let sender = sender.clone();
         let cancel = cancel.clone();
@@ -498,40 +296,22 @@ fn start(stream: UnixStream, run: Run) -> Result<()> {
             }
         }
     });
-    let status = loop {
-        if cancel.load(Ordering::Relaxed) {
-            if let Err(error) = group.terminate() {
-                done.store(true, Ordering::Relaxed);
-                let _ = stream.shutdown(Shutdown::Both);
-                std::mem::forget(deployment.lease);
-                return Err(error.into());
-            }
-            break child.wait()?;
-        }
-        if let Some(status) = child.try_wait()? {
-            break status;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    };
+    let completion = instance.wait(&cancel);
     done.store(true, Ordering::Relaxed);
-    if let Err(error) = group.kill() {
-        std::mem::forget(deployment.lease);
-        let _ = stream.shutdown(Shutdown::Both);
-        return Err(error.into());
-    }
+    let completion = match completion {
+        Ok(completion) => completion,
+        Err(error) => {
+            let _ = stream.shutdown(Shutdown::Both);
+            return Err(error);
+        }
+    };
     let _ = input_writer.join();
     for pump in pumps {
         let _ = pump.join();
     }
     controls_done.store(true, Ordering::Relaxed);
     let _ = input_pump.join();
-    let code = status
-        .code()
-        .unwrap_or_else(|| 128 + status.signal().unwrap_or(9));
-    // Cleanup and release ownership before advertising completion, so an
-    // immediate next run/uninstall cannot race a stale lease after the reply.
-    drop(group);
-    drop(deployment.lease);
+    let code = completion.finish()?;
     event(&sender, json!({"kind": "exit", "exit_status": code}), false)?;
     Ok(())
 }
