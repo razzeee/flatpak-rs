@@ -83,7 +83,11 @@ fn event(sender: &Sender, parameters: Value, continues: bool) -> io::Result<()> 
     )
 }
 
-pub(crate) fn serve(mut stream: UnixStream, request: Value) -> io::Result<()> {
+pub(crate) fn serve(
+    mut stream: UnixStream,
+    request: Value,
+    installation: &installation::Installation,
+) -> io::Result<()> {
     let result = (|| -> Result<()> {
         let object = request.as_object().ok_or("invalid Run request")?;
         if object
@@ -94,7 +98,7 @@ pub(crate) fn serve(mut stream: UnixStream, request: Value) -> io::Result<()> {
             return Err("Run requires more:true and no oneway/upgrade/unknown fields".into());
         }
         let run: Run = serde_json::from_value(request["parameters"].clone())?;
-        start(stream.try_clone()?, run)
+        start(stream.try_clone()?, run, installation)
     })();
     if let Err(error) = result {
         let detail: String = error.to_string().chars().take(2048).collect();
@@ -106,7 +110,7 @@ pub(crate) fn serve(mut stream: UnixStream, request: Value) -> io::Result<()> {
     Ok(())
 }
 
-fn start(stream: UnixStream, run: Run) -> Result<()> {
+fn start(stream: UnixStream, run: Run, installation: &installation::Installation) -> Result<()> {
     let mut peer_fd: libc::c_int = -1;
     let mut length = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
     // SAFETY: the authenticated stream yields a newly owned, lifetime-pinned
@@ -125,7 +129,7 @@ fn start(stream: UnixStream, run: Run) -> Result<()> {
     }
     // SAFETY: successful SO_PEERPIDFD transfers ownership of this descriptor.
     let peer_fd = unsafe { OwnedFd::from_raw_fd(peer_fd) };
-    let (instance, pipes) = Instance::start(run)?;
+    let (instance, pipes) = Instance::start(run, installation)?;
     let input = pipes.stdin;
     stream.set_write_timeout(Some(Duration::from_millis(100)))?;
     stream.set_read_timeout(Some(Duration::from_millis(200)))?;

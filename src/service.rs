@@ -1,4 +1,5 @@
 use crate::MAX_MESSAGE;
+use crate::installation::Installation;
 use serde_json::{Value, json};
 use std::fs;
 use std::io::{self, Read, Write};
@@ -89,7 +90,7 @@ fn error(name: &str, parameters: Value) -> Value {
     json!({"error": format!("org.varlink.service.{name}"), "parameters": parameters})
 }
 
-fn dispatch(request: Value) -> Option<Value> {
+fn dispatch(request: Value, installation: &Installation) -> Option<Value> {
     let object = request.as_object()?;
     let method = object.get("method")?.as_str()?;
     if object
@@ -128,37 +129,40 @@ fn dispatch(request: Value) -> Option<Value> {
         }
         "org.flatpakrs.Manager.GetHostStatus" => json!({"parameters": crate::host::status()}),
         "org.flatpakrs.Manager.ListInstances" => {
-            json!({"parameters": {"instances": crate::installation::instances()}})
+            json!({"parameters": {"instances": installation.instances()}})
         }
-        "org.flatpakrs.Manager.ListRuntimes" => match crate::installation::list_runtimes() {
+        "org.flatpakrs.Manager.ListRuntimes" => match installation.list_runtimes() {
             Ok(runtimes) => json!({"parameters": runtimes}),
             Err(e) => {
                 let detail: String = e.to_string().chars().take(2048).collect();
                 json!({"error": "org.flatpakrs.Manager.OperationFailed", "parameters": {"detail": detail}})
             }
         },
-        "org.flatpakrs.Manager.Uninstall" => operation(
-            Value::Object(parameters.clone()),
-            crate::installation::uninstall,
-        ),
-        "org.flatpakrs.Manager.DeleteData" => operation(
-            Value::Object(parameters.clone()),
-            crate::installation::delete_data,
-        ),
-        "org.flatpakrs.Manager.RemoveRuntime" => operation(
-            Value::Object(parameters.clone()),
-            crate::installation::remove_runtime,
-        ),
+        "org.flatpakrs.Manager.Uninstall" => {
+            operation(Value::Object(parameters.clone()), |variant| {
+                installation.uninstall(variant)
+            })
+        }
+        "org.flatpakrs.Manager.DeleteData" => {
+            operation(Value::Object(parameters.clone()), |variant| {
+                installation.delete_data(variant)
+            })
+        }
+        "org.flatpakrs.Manager.RemoveRuntime" => {
+            operation(Value::Object(parameters.clone()), |variant| {
+                installation.remove_runtime(variant)
+            })
+        }
         "org.flatpakrs.Manager.GetRecoveryStatus" if parameters.is_empty() => {
-            json!({"parameters": {"discarded_stages": crate::installation::recovered_stages()}})
+            json!({"parameters": {"discarded_stages": installation.recovered_stages()}})
         }
         "org.flatpakrs.Manager.Install" => operation::<crate::installation::Install, _>(
             Value::Object(parameters.clone()),
-            crate::installation::install,
+            |request| installation.install(request),
         ),
         "org.flatpakrs.Manager.Inspect" => operation::<crate::installation::Variant, _>(
             Value::Object(parameters.clone()),
-            crate::installation::inspect,
+            |variant| installation.inspect(variant),
         ),
         "org.varlink.service.GetInfo" => json!({"parameters": {
             "vendor": "flatpak-rs contributors", "product": "flatpak-rs experimental management service",
@@ -204,7 +208,7 @@ fn operation<T: serde::de::DeserializeOwned, R: serde::Serialize>(
     }
 }
 
-fn serve(mut stream: UnixStream) -> io::Result<()> {
+fn serve(mut stream: UnixStream, installation: &Installation) -> io::Result<()> {
     authenticate(&stream)?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
@@ -240,9 +244,9 @@ fn serve(mut stream: UnixStream) -> io::Result<()> {
                 if oneway {
                     return Ok(());
                 }
-                return crate::execution::serve(stream, request);
+                return crate::execution::serve(stream, request, installation);
             }
-            if let (false, Some(reply)) = (oneway, dispatch(request)) {
+            if let (false, Some(reply)) = (oneway, dispatch(request, installation)) {
                 serde_json::to_writer(&mut stream, &reply)?;
                 stream.write_all(&[0])?;
             }
@@ -308,7 +312,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Err("activation descriptor is not a listening socket".into());
     }
     listener.set_nonblocking(false)?;
-    if let Err(error) = crate::installation::recover() {
+    let installation = Arc::new(Installation::from_environment());
+    if let Err(error) = installation.recover() {
         // Keep management available for actionable errors; storage operations
         // retry recovery under their lock and cannot bypass a recovery failure.
         eprintln!("installation recovery unavailable: {error}");
@@ -321,8 +326,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         active.fetch_add(1, Ordering::Relaxed);
         let active = Arc::clone(&active);
+        let installation = Arc::clone(&installation);
         if let Err(error) = std::thread::Builder::new().spawn(move || {
-            if let Err(error) = serve(stream) {
+            if let Err(error) = serve(stream, &installation) {
                 eprintln!("client rejected/closed: {error}");
             }
             active.fetch_sub(1, Ordering::Relaxed);
