@@ -36,7 +36,7 @@ pub(super) struct Completion {
 impl Instance {
     /// Validate and claim a variant, enforce limits, then enroll the helper
     /// behind its configuration barrier before allowing any payload execution.
-    pub fn start(run: Run) -> Result<(Self, Pipes)> {
+    pub fn start(run: Run, installation: &installation::Installation) -> Result<(Self, Pipes)> {
         if run.command.is_empty() || run.command.iter().any(|arg| arg.contains('\0')) {
             return Err("missing/invalid command".into());
         }
@@ -45,7 +45,7 @@ impl Instance {
         if !(16..=1024).contains(&memory) || !(4..=256).contains(&pids) {
             return Err("limits require 16–1024 MiB and 4–256 processes".into());
         }
-        let deployment = installation::acquire(run.variant)?;
+        let deployment = installation.acquire(run.variant)?;
         let group = Group::new(memory, pids).map_err(|e| format!("required cgroup setup: {e}; require Delegate=memory pids and DelegateSubgroup=supervisor"))?;
         let config = sandbox::Config {
             app: deployment.app,

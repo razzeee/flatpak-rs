@@ -32,6 +32,31 @@ metadata; libostree performs checkout into a fresh private destination. Payloads
 are never executed, including hooks. Unsupported extensions, extra-data and
 hook declarations are rejected separately from permission declarations.
 
+## Installation ownership
+
+The activated daemon constructs one `Installation` handle and shares it with
+management connections and instance startup. The handle snapshots `XDG_DATA_HOME`
+or the `HOME` fallback once; request/CLI environment does not reconfigure it.
+Configuration capture does not touch storage. Initialization errors remain
+actionable operation errors without disabling the management listener, and a
+later storage operation retries failed startup recovery.
+
+A private operation scope owns serialization, validates the configured root
+and its directory ancestors, and completes startup recovery before permitting
+storage work. It revalidates paths on each operation rather than treating prior
+recovery as permission to follow a later symlink. Install, inspect, acquisition,
+uninstall, data deletion and runtime dependency checks use this same scope.
+Callers do not acquire locks or sequence recovery themselves.
+
+Running-variant leases retain the issuing handle's registry, not process-global
+state. Lock ordering is operation lock followed by registry lock. Listing
+instances and releasing a lease use only the registry lock; lease drop must not
+re-enter the operation lock because failed acquisition can drop a lease while
+holding it. Recovery readiness is scoped to the installation's operation lock;
+the startup discard count remains independently readable. No storage layout,
+CLI/Varlink interface, or libostree adapter change is introduced by this ownership
+structure.
+
 ## Publication and interruption
 
 Serialize installation/inspection in the service. Prepare app and runtime under

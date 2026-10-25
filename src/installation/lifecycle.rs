@@ -1,7 +1,12 @@
 //! Lifecycle operations share the installation/lease lock and never take paths
 //! from clients. Retention is prepared before atomically unpublishing an app.
-use super::*;
+use super::{Installation, Installed, Result, Revision, Variant, directory, read, remove_tree};
+use serde::Serialize;
+use std::fs::{self, File, OpenOptions};
+use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::fs::{PermissionsExt, symlink};
+use std::path::{Path, PathBuf};
 
 #[derive(Serialize)]
 pub struct Removed {
@@ -10,19 +15,6 @@ pub struct Removed {
 #[derive(Serialize)]
 pub struct Runtimes {
     runtimes: Vec<Revision>,
-}
-
-fn stopped(variant: &Variant) -> Result<()> {
-    if RUNNING
-        .lock()
-        .map_err(|_| "instance lock poisoned")?
-        .contains(variant)
-    {
-        return Err(
-            "application variant is running; stop it before uninstall or data deletion".into(),
-        );
-    }
-    Ok(())
 }
 
 fn stage_path(root: &Path, prefix: &str) -> Result<PathBuf> {
@@ -132,106 +124,96 @@ fn unpublish(root: &Path, path: &Path) -> Result<bool> {
     Ok(true)
 }
 
-pub fn uninstall(variant: Variant) -> Result<Removed> {
-    let _lock = OPERATIONS
-        .lock()
-        .map_err(|_| "installation lock poisoned")?;
-    variant.validate()?;
-    ensure_recovered()?;
-    stopped(&variant)?;
-    let root = root()?;
-    let path = variant.path(&root)?;
-    if !path.try_exists()? {
-        return Err("application variant is not installed".into());
-    }
-    let installed = read(&path)?;
-    retain_runtime(&root, &path, &installed.runtime)?;
-    Ok(Removed {
-        removed: unpublish(&root, &path)?,
-    })
-}
-
-pub fn delete_data(variant: Variant) -> Result<Removed> {
-    let _lock = OPERATIONS
-        .lock()
-        .map_err(|_| "installation lock poisoned")?;
-    variant.validate()?;
-    ensure_recovered()?;
-    stopped(&variant)?;
-    let root = root()?;
-    let data = root.join("data");
-    directory(&data)?;
-    let path = variant.path(&data)?;
-    Ok(Removed {
-        removed: unpublish(&root, &path)?,
-    })
-}
-
-pub fn remove_runtime(variant: Variant) -> Result<Removed> {
-    let _lock = OPERATIONS
-        .lock()
-        .map_err(|_| "installation lock poisoned")?;
-    variant.validate()?;
-    ensure_recovered()?;
-    let root = root()?;
-    if records(&root)?
-        .iter()
-        .any(|(_, installed)| installed.runtime.variant == variant)
-    {
-        return Err("runtime has installed application dependents; uninstall them first".into());
-    }
-    let pool = root.join("runtimes");
-    directory(&pool)?;
-    let path = variant.path(&pool)?;
-    Ok(Removed {
-        removed: unpublish(&root, &path)?,
-    })
-}
-
-pub fn list_runtimes() -> Result<Runtimes> {
-    let _lock = OPERATIONS
-        .lock()
-        .map_err(|_| "installation lock poisoned")?;
-    ensure_recovered()?;
-    let root = root()?;
-    let mut revisions: std::collections::HashSet<Revision> = records(&root)?
-        .into_iter()
-        .map(|(_, i)| i.runtime)
-        .collect();
-    let pool = root.join("runtimes/installed");
-    fn walk(
-        path: &Path,
-        depth: usize,
-        revisions: &mut std::collections::HashSet<Revision>,
-    ) -> Result<()> {
-        directory(path)?;
-        if depth == 5 {
-            let record = OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_NOFOLLOW)
-                .open(path.join("revision.json"))?;
-            revisions.insert(serde_json::from_reader(record)?);
-            return Ok(());
+impl Installation {
+    pub fn uninstall(&self, variant: Variant) -> Result<Removed> {
+        variant.validate()?;
+        let operation = self.operation()?;
+        operation.stopped(&variant)?;
+        let root = &operation.root;
+        let path = variant.path(root)?;
+        if !path.try_exists()? {
+            return Err("application variant is not installed".into());
         }
-        for entry in fs::read_dir(path)? {
-            let entry = entry?;
-            if !entry.file_type()?.is_dir() {
-                return Err("unsafe retained runtime entry".into());
+        let installed = read(&path)?;
+        retain_runtime(root, &path, &installed.runtime)?;
+        Ok(Removed {
+            removed: unpublish(root, &path)?,
+        })
+    }
+
+    pub fn delete_data(&self, variant: Variant) -> Result<Removed> {
+        variant.validate()?;
+        let operation = self.operation()?;
+        operation.stopped(&variant)?;
+        let root = &operation.root;
+        let data = root.join("data");
+        directory(&data)?;
+        let path = variant.path(&data)?;
+        Ok(Removed {
+            removed: unpublish(root, &path)?,
+        })
+    }
+
+    pub fn remove_runtime(&self, variant: Variant) -> Result<Removed> {
+        variant.validate()?;
+        let operation = self.operation()?;
+        let root = &operation.root;
+        if records(root)?
+            .iter()
+            .any(|(_, installed)| installed.runtime.variant == variant)
+        {
+            return Err(
+                "runtime has installed application dependents; uninstall them first".into(),
+            );
+        }
+        let pool = root.join("runtimes");
+        directory(&pool)?;
+        let path = variant.path(&pool)?;
+        Ok(Removed {
+            removed: unpublish(root, &path)?,
+        })
+    }
+
+    pub fn list_runtimes(&self) -> Result<Runtimes> {
+        let operation = self.operation()?;
+        let root = &operation.root;
+        let mut revisions: std::collections::HashSet<Revision> =
+            records(root)?.into_iter().map(|(_, i)| i.runtime).collect();
+        let pool = root.join("runtimes/installed");
+        fn walk(
+            path: &Path,
+            depth: usize,
+            revisions: &mut std::collections::HashSet<Revision>,
+        ) -> Result<()> {
+            directory(path)?;
+            if depth == 5 {
+                let record = OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_NOFOLLOW)
+                    .open(path.join("revision.json"))?;
+                revisions.insert(serde_json::from_reader(record)?);
+                return Ok(());
             }
-            walk(&entry.path(), depth + 1, revisions)?;
+            for entry in fs::read_dir(path)? {
+                let entry = entry?;
+                if !entry.file_type()?.is_dir() {
+                    return Err("unsafe retained runtime entry".into());
+                }
+                walk(&entry.path(), depth + 1, revisions)?;
+            }
+            Ok(())
         }
-        Ok(())
+        walk(&pool, 0, &mut revisions)?;
+        let mut runtimes: Vec<_> = revisions.into_iter().collect();
+        runtimes.sort_by_cached_key(|r| {
+            (
+                r.variant.collection.clone(),
+                r.variant.id.clone(),
+                r.variant.arch.clone(),
+                r.variant.branch.clone(),
+                r.commit.clone(),
+            )
+        });
+        Ok(Runtimes { runtimes })
     }
-    walk(&pool, 0, &mut revisions)?;
-    let mut runtimes: Vec<_> = revisions.into_iter().collect();
-    runtimes.sort_by_cached_key(|r| {
-        (
-            r.variant.collection.clone(),
-            r.variant.id.clone(),
-            r.variant.arch.clone(),
-            r.variant.branch.clone(),
-            r.commit.clone(),
-        )
-    });
-    Ok(Runtimes { runtimes })
 }
