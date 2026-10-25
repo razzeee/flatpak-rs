@@ -91,6 +91,9 @@ across output stalls; a healthy slow consumer must not lose bytes. Cancellation
 or disconnect interrupts stalled writes; aborting a partial frame closes the
 connection instead of emitting a corrupt subsequent frame. The control reader
 remains live through output draining after app exit. Output failure or connection EOF cancels the run.
+The connecting process's pidfd is monitored independently of helper waiting,
+through output draining and final reply teardown. Its death cancels stalled
+writes even if a different host process retains a socket copy and prevents EOF.
 CLI SIGINT/SIGTERM requests cancellation; closed stdout/stderr disconnects.
 Host output uses a bounded worker and cancellation-aware completion waits so
 backpressure cannot trap the CLI or change the parent's descriptor flags. The

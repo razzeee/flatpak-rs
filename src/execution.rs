@@ -36,6 +36,49 @@ impl Drop for Child {
     }
 }
 
+// Process ownership outlives helper waiting: output and even the final reply
+// can still be backpressured after the app exits. A scope-owned monitor keeps
+// cancellation live throughout teardown, even if another process holds a
+// socket copy and prevents the control reader from observing EOF.
+struct PeerMonitor {
+    stop: Arc<AtomicBool>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+impl PeerMonitor {
+    fn new(peer_fd: OwnedFd, cancel: Arc<AtomicBool>) -> io::Result<Self> {
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopped = stop.clone();
+        let worker = std::thread::Builder::new()
+            .name("run-peer-monitor".into())
+            .spawn(move || {
+                let mut peer = libc::pollfd {
+                    fd: peer_fd.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                while !stopped.load(Ordering::Relaxed) {
+                    // SAFETY: the owned pidfd stays alive through this bounded poll.
+                    if unsafe { libc::poll(&mut peer, 1, 100) } != 0 {
+                        cancel.store(true, Ordering::Relaxed);
+                        break;
+                    }
+                }
+            })?;
+        Ok(Self {
+            stop,
+            worker: Some(worker),
+        })
+    }
+}
+impl Drop for PeerMonitor {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Run {
@@ -283,6 +326,7 @@ fn start(stream: UnixStream, run: Run) -> Result<()> {
     stream.set_write_timeout(Some(Duration::from_millis(100)))?;
     stream.set_read_timeout(Some(Duration::from_millis(200)))?;
     let cancel = Arc::new(AtomicBool::new(false));
+    let _peer_monitor = PeerMonitor::new(peer_fd, cancel.clone())?;
     let sender = Arc::new(Output {
         stream: Mutex::new(stream.try_clone()?),
         cancel: cancel.clone(),
@@ -455,15 +499,6 @@ fn start(stream: UnixStream, run: Run) -> Result<()> {
         }
     });
     let status = loop {
-        let mut peer = libc::pollfd {
-            fd: peer_fd.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        // SAFETY: one valid poll descriptor, no blocking.
-        if unsafe { libc::poll(&mut peer, 1, 0) } != 0 {
-            cancel.store(true, Ordering::Relaxed);
-        }
         if cancel.load(Ordering::Relaxed) {
             if let Err(error) = group.terminate() {
                 done.store(true, Ordering::Relaxed);
