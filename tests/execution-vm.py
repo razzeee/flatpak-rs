@@ -15,4 +15,5 @@ except Exception:
     machine.log(machine.succeed("ps -eo pid,ppid,stat,wchan:24,args"))
     raise
 machine.succeed(alice("python /etc/lifecycle-probe.py"))
+machine.succeed(alice("python /etc/owner-death-probe.py"))
 machine.succeed(alice("python /etc/instance-probe.py"))

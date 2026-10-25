@@ -46,6 +46,23 @@ int main(int argc, char **argv) {
         return 0;
     }
     if (!strcmp(argv[1], "exit")) return 23;
+    if (!strcmp(argv[1], "post-exit-output")) {
+        char bytes[4096]; memset(bytes, 'r', sizeof(bytes));
+        REQUIRE(fcntl(1, F_SETFL, fcntl(1, F_GETFL) | O_NONBLOCK) == 0);
+        int stalled = 0;
+        for (int i = 0; i < 2000; i++) {
+            ssize_t n = write(1, bytes, sizeof(bytes));
+            if (n == -1 && errno == EAGAIN) {
+                if (++stalled == 20) return 0;
+                usleep(10000);
+            } else {
+                REQUIRE(n > 0);
+                stalled = 0;
+                usleep(1000);
+            }
+        }
+        return 96; /* sustained backpressure was not established */
+    }
     if (!strcmp(argv[1], "burst")) {
         char bytes[4096]; memset(bytes, 'b', sizeof(bytes));
         for (int i = 0; i < 512; i++) for (int fd = 1; fd <= 2; fd++) {

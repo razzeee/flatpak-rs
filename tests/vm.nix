@@ -23,6 +23,7 @@ let fixtures = pkgs.runCommand "flatpak-rs-install-fixtures" {
     environment.etc."varlink-probe.py".source = ./varlink-probe.py;
     environment.etc."install-fixtures".source = fixtures;
     environment.etc."foreground-probe.py".source = ./foreground-probe.py;
+    environment.etc."owner-death-probe.py".source = ./owner-death-probe.py;
     environment.etc."instance-probe.py".source = ./instance-probe.py;
     environment.etc."lifecycle-probe.py".source = ./lifecycle-probe.py;
     environment.etc."execution-ipc-probe.py".source = ./execution-ipc-probe.py;
