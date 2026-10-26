@@ -94,6 +94,7 @@ let fixtures = pkgs.runCommand "flatpak-rs-install-fixtures" {
     exec(${builtins.toJSON (builtins.readFile ./update-vm.py)})
     exec(${builtins.toJSON (builtins.readFile ./update-crash-vm.py)})
     exec(${builtins.toJSON (builtins.readFile ./update-fault-vm.py)})
+    exec(${builtins.toJSON (builtins.readFile ./update-pairs-vm.py)})
     exec(${builtins.toJSON (builtins.readFile ./execution-vm.py)})
     exec(${builtins.toJSON (builtins.readFile ./security-vm.py)})
 

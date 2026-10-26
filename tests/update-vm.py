@@ -1,4 +1,11 @@
 # Transactional updates: primary CLI -> real service seam, independent fixtures.
+def restart_update_service():
+    # Frequent deliberate restarts must reset the test's start-limit counter,
+    # not weaken the production unit's restart protection.
+    machine.succeed(alice("systemctl --user reset-failed flatpak-rs.service flatpak-rs.socket"))
+    machine.succeed(alice("systemctl --user start flatpak-rs.socket"))
+    machine.succeed(alice("systemctl --user restart flatpak-rs.service"))
+
 plan_command = install.replace(" install ", " plan-update ").replace("/repo ", "/update-app ")
 machine.succeed(alice(plan_command + " > /home/alice/update-plan.json"))
 plan = json.loads(machine.succeed(alice("cat /home/alice/update-plan.json")))
