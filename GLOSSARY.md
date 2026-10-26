@@ -32,6 +32,18 @@ _Avoid_: Revision
 The exact artifact version selected for an installed application variant or runtime.
 _Avoid_: Branch
 
+**Installed selection**:
+The pair of exact application and compatible runtime revisions selected for an application variant.
+_Avoid_: Revision (when referring to the pair)
+
+**Update**:
+An explicit replacement of an existing application variant's installed selection, preserving its identity and persistent data.
+_Avoid_: Reinstall, implicit upgrade
+
+**Update plan**:
+A proposed update identifying its target application variant, expected installed selection, and desired installed selection. It does not reserve or change the installation.
+_Avoid_: Update job, reservation
+
 **Runtime**:
 A separately distributed execution environment required by an application.
 _Avoid_: Host environment

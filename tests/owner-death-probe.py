@@ -6,6 +6,7 @@ import select
 import signal
 import socket
 import subprocess
+import sys
 import time
 
 variant = dict(collection="org.example.Collection", id="org.example.Fixture", arch="x86_64", branch="stable")
@@ -86,17 +87,23 @@ try:
     wait_for(lambda: not payloads(), "finite-output payload did not exit")
     assert instances() == [variant], "probe did not establish post-exit output draining"
     # Ownership must still exclude lifecycle operations while the owner is alive.
-    for args, diagnostic in [
+    checks = [
         (["run", *fields, "--", "/app/bin/probe", "exit"], b"already running"),
         (["delete-data", *fields], b"running"),
         (["uninstall", *fields], b"running"),
-    ]:
+    ]
+    if len(sys.argv) > 1:
+        checks.append((["apply-update", sys.argv[1]], b"UpdateBusy"))
+    for args, diagnostic in checks:
         result = subprocess.run(["flatpak-rs", *args], capture_output=True, timeout=5)
         assert result.returncode == 1 and diagnostic in result.stderr, result
     os.write(exit_w, b"x")
     assert os.waitpid(owner, 0)[1] == 0
     reaped = True
     wait_for(lambda: not instances(), "lease retained after connecting owner died during output drain")
+    if len(sys.argv) > 1:
+        retried = subprocess.run(["flatpak-rs", "apply-update", sys.argv[1]], capture_output=True, timeout=5)
+        assert retried.returncode == 0 and json.loads(retried.stdout)["outcome"] == "unchanged", retried
     os.kill(holder, 0)  # Cleanup must not depend on closing the inherited socket.
     assert not payloads()
     retry = subprocess.run(["flatpak-rs", "run", *fields, "--", "/app/bin/probe", "exit"], capture_output=True, timeout=5)

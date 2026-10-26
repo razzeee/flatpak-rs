@@ -2,7 +2,7 @@ use crate::MAX_MESSAGE;
 use crate::installation::Installation;
 use serde_json::{Value, json};
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::mem::{size_of, zeroed};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;
@@ -160,6 +160,34 @@ fn dispatch(request: Value, installation: &Installation) -> Option<Value> {
             Value::Object(parameters.clone()),
             |request| installation.install(request),
         ),
+        "org.flatpakrs.Manager.PlanUpdate" => {
+            match serde_json::from_value(Value::Object(parameters.clone())) {
+                Err(_) => error("InvalidParameter", json!({"parameter":"parameters"})),
+                Ok(request) => match installation.plan_update(request) {
+                    Ok(plan) => json!({"parameters":{"plan":plan}}),
+                    Err(error) => {
+                        json!({"error":format!("org.flatpakrs.Manager.{}",error.name), "parameters":error.parameters})
+                    }
+                },
+            }
+        }
+        "org.flatpakrs.Manager.ApplyUpdate" => {
+            if parameters.len() != 1 || !parameters.get("plan").is_some_and(Value::is_object) {
+                error("InvalidParameter", json!({"parameter":"plan"}))
+            } else {
+                match serde_json::from_value(parameters["plan"].clone()) {
+                    Err(error) => {
+                        json!({"error":"org.flatpakrs.Manager.UpdateInvalidPlan", "parameters":{"detail":error.to_string().chars().take(2048).collect::<String>()}})
+                    }
+                    Ok(plan) => match installation.apply_update(plan) {
+                        Ok(result) => json!({"parameters":result}),
+                        Err(error) => {
+                            json!({"error":format!("org.flatpakrs.Manager.{}",error.name), "parameters":error.parameters})
+                        }
+                    },
+                }
+            }
+        }
         "org.flatpakrs.Manager.Inspect" => operation::<crate::installation::Variant, _>(
             Value::Object(parameters.clone()),
             |variant| installation.inspect(variant),
@@ -224,7 +252,7 @@ fn serve(mut stream: UnixStream, installation: &Installation) -> io::Result<()> 
             return Ok(());
         }
         if byte[0] == 0 {
-            let Ok(request) = serde_json::from_slice::<Value>(&frame) else {
+            let Ok(request) = crate::wire::strict_json(&frame) else {
                 return Ok(());
             };
             if !request
@@ -247,8 +275,7 @@ fn serve(mut stream: UnixStream, installation: &Installation) -> io::Result<()> 
                 return crate::execution::serve(stream, request, installation);
             }
             if let (false, Some(reply)) = (oneway, dispatch(request, installation)) {
-                serde_json::to_writer(&mut stream, &reply)?;
-                stream.write_all(&[0])?;
+                crate::wire::send(&mut stream, &reply)?;
             }
             frame.clear();
         } else {

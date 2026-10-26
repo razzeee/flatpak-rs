@@ -159,4 +159,71 @@ fn real_service_rejects_invalid_requests_and_remains_available() {
             .iter()
             .any(|check| check["name"] == "cgroup_control" && check["available"] == false)
     );
+
+    let mut planning = service.connect();
+    let target = serde_json::json!({"collection":"org.example.Collection", "id":"org.example.Missing",
+        "arch":std::env::consts::ARCH, "branch":"stable"});
+    let request = serde_json::json!({"method":"org.flatpakrs.Manager.PlanUpdate", "parameters":{
+        "source":"/missing/source", "app":target, "runtime":{
+            "collection":"org.example.Collection", "id":"org.example.Platform",
+            "arch":std::env::consts::ARCH, "branch":"stable"}}});
+    planning
+        .write_all(&serde_json::to_vec(&request).unwrap())
+        .unwrap();
+    planning.write_all(&[0]).unwrap();
+    let bytes: Vec<_> = BufReader::new(planning)
+        .bytes()
+        .map(Result::unwrap)
+        .take_while(|b| *b != 0)
+        .collect();
+    let reply: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(reply["error"], "org.flatpakrs.Manager.UpdateNotInstalled");
+    assert_eq!(reply["parameters"]["target"], target);
+
+    let mut duplicate = service.connect();
+    duplicate.write_all(b"{\"method\":\"org.flatpakrs.Manager.PlanUpdate\",\"parameters\":{},\"parameters\":{}}\0").unwrap();
+    assert_eq!(
+        duplicate.read(&mut [0]).unwrap(),
+        0,
+        "duplicate members must be rejected before dispatch"
+    );
+
+    let app = serde_json::json!({"collection":"org.example.Collection","id":"org.example.Missing",
+        "arch":std::env::consts::ARCH,"branch":"stable","commit":"a".repeat(64)});
+    let runtime = serde_json::json!({"collection":"org.example.Collection","id":"org.example.Platform",
+        "arch":std::env::consts::ARCH,"branch":"stable","commit":"b".repeat(64)});
+    let pair = serde_json::json!({"app":app,"runtime":runtime});
+    let plan = serde_json::json!({"format_version":1,"target":target,"expected":pair,"desired":pair,
+        "sources":{"app":"/missing/source","runtime":"/missing/source"}});
+    let mut apply = service.connect();
+    let request = serde_json::json!({"method":"org.flatpakrs.Manager.ApplyUpdate","parameters":{"plan":plan}});
+    apply
+        .write_all(&serde_json::to_vec(&request).unwrap())
+        .unwrap();
+    apply.write_all(&[0]).unwrap();
+    let bytes: Vec<_> = BufReader::new(apply)
+        .bytes()
+        .map(Result::unwrap)
+        .take_while(|b| *b != 0)
+        .collect();
+    let reply: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(reply["error"], "org.flatpakrs.Manager.UpdateNotInstalled");
+    let file = service.runtime.join("missing-plan.json");
+    std::fs::write(
+        &file,
+        serde_json::to_vec(&request["parameters"]["plan"]).unwrap(),
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_flatpak-rs"))
+        .args(["apply-update", file.to_str().unwrap()])
+        .env("XDG_RUNTIME_DIR", &service.runtime)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let message = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        message.contains("UpdateNotInstalled") && !message.contains("outcome uncertain"),
+        "{message}"
+    );
 }

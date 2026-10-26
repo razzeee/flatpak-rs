@@ -12,6 +12,7 @@ An experimental exploration of the Flatpak Next direction in Rust.
 - [Experimental service/authentication contract](docs/service-contract.md)
 - [Local installation/publication contract](docs/installation-contract.md)
 - [Confined execution and lifecycle contract](docs/execution-contract.md)
+- [Transactional local updates](docs/local-update-protocol.md)
 - [Milestone acceptance and compatibility coverage](docs/milestone-acceptance.md)
 
 Created in [T3 Code](https://t3.codes).
