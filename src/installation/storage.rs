@@ -3,9 +3,123 @@ use super::{Result, Revision, Variant};
 use gio::prelude::*;
 use std::path::Path;
 
+/// Atomic moves are confined to validated service-owned directories, never sources.
+pub(super) fn rename_private(source: &Path, destination: &Path, exchange: bool) -> Result<()> {
+    use std::os::{fd::AsRawFd, unix::fs::OpenOptionsExt};
+    let open = |path: &Path| {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+            .open(path)
+    };
+    let old = open(source.parent().ok_or("missing source parent")?)?;
+    let new = open(destination.parent().ok_or("missing destination parent")?)?;
+    let a = std::ffi::CString::new(
+        source
+            .file_name()
+            .ok_or("missing source name")?
+            .as_encoded_bytes(),
+    )?;
+    let b = std::ffi::CString::new(
+        destination
+            .file_name()
+            .ok_or("missing destination name")?
+            .as_encoded_bytes(),
+    )?;
+    if exchange {
+        if !std::fs::symlink_metadata(source)?.is_dir()
+            || !std::fs::symlink_metadata(destination)?.is_dir()
+        {
+            return Err("atomic update requires real deployment directories".into());
+        }
+        // SAFETY: fstatfs fills a correctly sized output for an open directory.
+        let mut stats: libc::statfs = unsafe { std::mem::zeroed() };
+        if unsafe { libc::fstatfs(new.as_raw_fd(), &mut stats) } != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        if stats.f_type == 0x6969 {
+            return Err("NFS is not supported for atomic local updates".into());
+        }
+    }
+    // SAFETY: directory descriptors and NUL-terminated single-component names
+    // remain live; the kernel performs the atomic exchange/non-overwriting move.
+    if unsafe {
+        libc::renameat2(
+            old.as_raw_fd(),
+            a.as_ptr(),
+            new.as_raw_fd(),
+            b.as_ptr(),
+            if exchange {
+                libc::RENAME_EXCHANGE
+            } else {
+                libc::RENAME_NOREPLACE
+            },
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(())
+}
+
 pub(super) struct Source(ostree::Repo);
 
 impl Source {
+    pub(super) fn empty(destination: &Path) -> Result<Self> {
+        let repo = ostree::Repo::new(&gio::File::for_path(destination));
+        repo.create(ostree::RepoMode::BareUserOnly, gio::Cancellable::NONE)?;
+        Ok(Self(repo))
+    }
+
+    pub(super) fn import_revision(
+        &self,
+        revision: &Revision,
+        kind: &str,
+        destination: &Self,
+    ) -> Result<()> {
+        if self.0.collection_id().as_deref() != Some(&revision.variant.collection) {
+            return Err(
+                "explicit collection does not match local repository collection identity".into(),
+            );
+        }
+        let reference = format!(
+            "{kind}/{}/{}/{}",
+            revision.variant.id, revision.variant.arch, revision.variant.branch
+        );
+        let options = glib::VariantDict::new(None);
+        options.insert(
+            "collection-refs",
+            &[(
+                revision.variant.collection.as_str(),
+                reference.as_str(),
+                revision.commit.as_str(),
+            )][..],
+        );
+        options.insert("flags", ostree::RepoPullFlags::UNTRUSTED.bits() as i32);
+        options.insert("depth", 0i32);
+        options.insert("gpg-verify", false);
+        options.insert("gpg-verify-summary", false);
+        options.insert("disable-static-deltas", true);
+        destination.0.pull_with_options(
+            &self.0.path().uri(),
+            &options.end(),
+            None,
+            gio::Cancellable::NONE,
+        )?;
+        let (commit, _) = destination.0.load_commit(&revision.commit)?;
+        let attributes = glib::VariantDict::new(Some(&commit.child_value(0)));
+        let collection = attributes.lookup::<String>("ostree.collection-binding")?;
+        let refs = attributes.lookup::<Vec<String>>("ostree.ref-binding")?;
+        if collection.as_deref() != Some(&revision.variant.collection)
+            || !refs.is_some_and(|refs| refs.contains(&reference))
+        {
+            return Err(
+                "pinned commit collection/ref binding does not match selected identity".into(),
+            );
+        }
+        Ok(())
+    }
+
     pub(super) fn open(path: &Path) -> Result<Self> {
         use std::os::unix::ffi::OsStrExt;
         if !path.is_absolute() || path.as_os_str().as_bytes().contains(&0) {

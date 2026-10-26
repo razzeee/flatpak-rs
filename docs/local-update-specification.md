@@ -5,6 +5,10 @@ is the publication snapshot; GitHub Issues is the specification tracker.
 The approved six-ticket breakdown is published as native sub-issues #23–#28;
 the current graph is also recorded in `local-update-design.md`.
 
+Subsequent status: the user separately authorized full implementation of #22;
+see `local-update-validation.md` for implementation evidence. The specification
+text below preserves the publication-time approval gate and problem statement.
+
 Status: approved behavioral scope, synthesized for GitHub publication. Publishing
 this specification or marking tickets ready-for-agent does not authorize
 implementation. Separate implementation approval is required. Exact protocol and

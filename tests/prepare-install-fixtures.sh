@@ -94,6 +94,19 @@ flatpak build-export --disable-sandbox --collection-id=org.example.Collection \
 cp -a "$out/repo" "$out/update-runtime"
 printf 'changed runtime\n' >> "$out/runtime/usr/payload"
 flatpak build-export --disable-sandbox --runtime --collection-id=org.example.Collection "$out/update-runtime" "$out/runtime" stable
+ostree --repo="$out/update-app" rev-parse app/org.example.Fixture/x86_64/stable > "$out/update-app-commit"
+ostree --repo="$out/update-runtime" rev-parse runtime/org.example.Platform/x86_64/stable > "$out/update-runtime-commit"
+cp -a "$out/update-app" "$out/update-bindings"
+ostree --repo="$out/update-bindings" commit --orphan --no-bindings \
+    --tree=ref=app/org.example.Fixture/x86_64/stable -s 'missing bindings' > "$out/update-unbound-commit"
+ostree --repo="$out/update-bindings" commit --orphan --no-bindings \
+    --tree=ref=app/org.example.Fixture/x86_64/stable -s 'mistyped bindings' \
+    --add-metadata-string=ostree.collection-binding=org.example.Collection \
+    --add-metadata-string=ostree.ref-binding=app/org.example.Fixture/x86_64/stable > "$out/update-mistyped-commit"
+ostree --repo="$out/update-bindings" commit --orphan --no-bindings \
+    --tree=ref=app/org.example.Fixture/x86_64/stable -s 'wrong collection binding' \
+    --add-metadata-string=ostree.collection-binding=org.example.OtherCollection \
+    --add-metadata="ostree.ref-binding=['app/org.example.Fixture/x86_64/stable']" > "$out/update-wrong-binding-commit"
 
 # Deliberately corrupt a payload in a valid bare repository without changing its
 # advertised checksum. The service must not silently install this under that ID.
@@ -107,6 +120,17 @@ prefix=$(printf '%s' "$payload" | cut -c1-2)
 suffix=$(printf '%s' "$payload" | cut -c3-)
 chmod u+w "$out/corrupt/objects/$prefix/$suffix.file"
 printf 'corrupt payload\n' > "$out/corrupt/objects/$prefix/$suffix.file"
+
+# Corrupt the exact stable update pin, not a differently bound negative-test ref.
+ostree --repo="$out/corrupt-update" init --mode=bare-user-only --collection-id=org.example.Collection
+ostree --repo="$out/corrupt-update" config set core.min-free-space-percent 0
+ostree --repo="$out/corrupt-update" config set core.min-free-space-size 256MB
+ostree --repo="$out/corrupt-update" pull-local "$out/update-app" app/org.example.Fixture/x86_64/stable runtime/org.example.Platform/x86_64/stable
+payload=$(ostree --repo="$out/corrupt-update" ls -C app/org.example.Fixture/x86_64/stable /files/bin/fixture | awk '{print $5}')
+prefix=$(printf '%s' "$payload" | cut -c1-2)
+suffix=$(printf '%s' "$payload" | cut -c3-)
+chmod u+w "$out/corrupt-update/objects/$prefix/$suffix.file"
+printf 'corrupt update payload\n' > "$out/corrupt-update/objects/$prefix/$suffix.file"
 
 # Independent malformed inputs: reference Flatpak exporters correctly refuse
 # some of these, so use the reference OSTree CLI for deliberate corruption.
@@ -128,3 +152,12 @@ printf '\n[Context]\n' >> "$out/many-permissions-metadata"
 awk 'BEGIN { for (i = 0; i < 1500; i++) print "future-permission-" i "=unknown" }' >> "$out/many-permissions-metadata"
 flatpak build-export --disable-sandbox --collection-id=org.example.Collection \
     --metadata="$out/many-permissions-metadata" "$out/repo" "$out/app" many-permissions
+
+# Both replacements are bound to stable so validation reaches the declarations,
+# rather than rejecting a deliberately mismatched branch before reading metadata.
+cp -a "$out/repo" "$out/update-permissions"
+flatpak build-export --disable-sandbox --collection-id=org.example.Collection "$out/update-permissions" "$out/app" stable
+cp -a "$out/repo" "$out/update-hook"
+flatpak build-export --disable-sandbox --collection-id=org.example.Collection \
+    --metadata="$out/hook-metadata" "$out/update-hook" "$out/app" stable
+ostree --repo="$out/update-hook" rev-parse app/org.example.Fixture/x86_64/stable > "$out/update-hook-commit"

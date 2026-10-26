@@ -1,6 +1,6 @@
 # Building and testing
 
-Linux only; Rust with edition 2024 support (1.85+), systemd 254+ (for
+Linux only; the pinned Rust toolchain, systemd 254+ (for
 `DelegateSubgroup`), Linux 6.5+ (for `SO_PEERPIDFD`), unified cgroup v2 with
 memory/pids controllers, and unprivileged user namespaces are required.
 The pinned Nix environment supplies the tested compiler and operating system.
@@ -137,6 +137,37 @@ authenticates a publisher. The service stores deployments under its own
 `$XDG_DATA_HOME/flatpak-rs` (default `~/.local/share/flatpak-rs`), independently
 of reference Flatpak installations. The CLI environment does not reconfigure an
 already-running service's data directory. No app is executed by these commands.
+
+## Transactional local updates (experimental)
+
+Plan explicitly, save the JSON, then apply that exact file:
+
+```sh
+flatpak-rs plan-update /absolute/path/to/repo \
+  org.example.Collection org.example.Fixture x86_64 stable \
+  org.example.Collection org.example.Platform stable > update-plan.json
+flatpak-rs apply-update update-plan.json
+flatpak-rs inspect org.example.Collection org.example.Fixture x86_64 stable
+```
+
+Planning reserves nothing. Optional `--runtime-source PATH`, `--app-commit COMMIT`
+and `--runtime-commit COMMIT` select explicit providers and exact older objects.
+Apply requires an installed inactive variant, including no output-draining lease.
+It compares complete expected selections, imports exact pins without following
+moved refs, and atomically publishes the complete app/runtime pair. An eligible
+already-installed desired pair returns `unchanged` even without the sources.
+Data is preserved, not rolled back or guaranteed compatible with older content.
+Previous runtimes remain until explicit removal.
+
+Apply returns `updated` or `unchanged`, the complete selection, and warnings.
+`cleanup_pending` means committed publication succeeded but obsolete content still
+needs cleanup. Uncertain synchronization or lost acknowledgements require inspection
+and retry of the **same saved plan**, not fresh ref resolution. Accepted work is
+not cancelled by disconnect. Planning/apply read timeouts are 300 seconds; writes
+use 15 seconds. No repair, rollback/history, authenticated remotes, live update,
+progress stream or one-command update is provided. See the
+[protocol](local-update-protocol.md), [storage contract](local-update-storage.md)
+and [acceptance evidence](local-update-validation.md).
 
 ## Confined foreground execution and lifecycle
 

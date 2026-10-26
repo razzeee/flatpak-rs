@@ -2,6 +2,66 @@ use serde_json::Value;
 use std::io::{self, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 
+/// Preserve member uniqueness and bound nesting before generic Value dispatch.
+pub(crate) fn strict_json(bytes: &[u8]) -> serde_json::Result<Value> {
+    use serde::de::{DeserializeSeed, Error, MapAccess, SeqAccess, Visitor};
+    struct Seed(usize);
+    impl<'de> DeserializeSeed<'de> for Seed {
+        type Value = Value;
+        fn deserialize<D: serde::Deserializer<'de>>(self, decoder: D) -> Result<Value, D::Error> {
+            if self.0 > 16 {
+                return Err(D::Error::custom("JSON nesting exceeds 16 containers"));
+            }
+            decoder.deserialize_any(self)
+        }
+    }
+    impl<'de> Visitor<'de> for Seed {
+        type Value = Value;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("bounded JSON with unique object members")
+        }
+        fn visit_bool<E: Error>(self, v: bool) -> Result<Value, E> {
+            Ok(Value::Bool(v))
+        }
+        fn visit_i64<E: Error>(self, v: i64) -> Result<Value, E> {
+            Ok(v.into())
+        }
+        fn visit_u64<E: Error>(self, v: u64) -> Result<Value, E> {
+            Ok(v.into())
+        }
+        fn visit_f64<E: Error>(self, v: f64) -> Result<Value, E> {
+            Ok(serde_json::json!(v))
+        }
+        fn visit_str<E: Error>(self, v: &str) -> Result<Value, E> {
+            Ok(v.into())
+        }
+        fn visit_unit<E: Error>(self) -> Result<Value, E> {
+            Ok(Value::Null)
+        }
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Value, A::Error> {
+            let mut values = Vec::new();
+            while let Some(value) = seq.next_element_seed(Seed(self.0 + 1))? {
+                values.push(value);
+            }
+            Ok(Value::Array(values))
+        }
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
+            let mut values = serde_json::Map::new();
+            while let Some(key) = map.next_key::<String>()? {
+                if values.contains_key(&key) {
+                    return Err(A::Error::custom("duplicate object member"));
+                }
+                values.insert(key, map.next_value_seed(Seed(self.0 + 1))?);
+            }
+            Ok(Value::Object(values))
+        }
+    }
+    let mut decoder = serde_json::Deserializer::from_slice(bytes);
+    let value = Seed(0).deserialize(&mut decoder)?;
+    decoder.end()?;
+    Ok(value)
+}
+
 pub(crate) fn send(stream: &mut UnixStream, value: &Value) -> io::Result<()> {
     let mut bytes = serde_json::to_vec(value)?;
     if bytes.len() > crate::MAX_MESSAGE {
