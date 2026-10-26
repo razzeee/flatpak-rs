@@ -3,7 +3,10 @@ use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
 fn run() -> Result<i32, Box<dyn std::error::Error>> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let args: Vec<String> = std::env::args_os()
+        .skip(1)
+        .map(|arg| arg.into_string().map_err(|_| "arguments must be UTF-8"))
+        .collect::<Result<_, _>>()?;
     if args.first().map(String::as_str) == Some("run") {
         return flatpak_rs::execution_client::run(&args[1..]);
     }
@@ -75,73 +78,69 @@ fn run() -> Result<i32, Box<dyn std::error::Error>> {
             }),
         )?;
         stream.write_all(&[0])?;
-        let mut bytes = Vec::new();
-        for byte in BufReader::new(stream)
-            .bytes()
-            .take(flatpak_rs::MAX_MESSAGE + 1)
-        {
-            let byte = byte?;
-            if byte == 0 {
-                let response: serde_json::Value = serde_json::from_slice(&bytes)?;
-                if let Some(error) = response.get("error") {
-                    let error = error
-                        .as_str()
-                        .ok_or("invalid service error acknowledgement")?;
-                    if !response["parameters"].is_object() {
-                        return Err("invalid service error parameters".into());
-                    }
-                    definitive = true;
-                    if error == "org.flatpakrs.Manager.UpdateOutcomeUncertain" {
-                        return Err(format!("{}: {}", guidance(), response["parameters"]).into());
-                    }
-                    return Err(format!(
-                        "service rejected {method}: {error}: {}",
-                        response["parameters"]
-                    )
-                    .into());
-                }
-                let parameters = if method == "PlanUpdate" {
-                    &response["parameters"]["plan"]
-                } else {
-                    &response["parameters"]
-                };
-                let code = if method == "GetHostStatus" {
-                    if serde_json::from_value::<flatpak_rs::HostStatus>(parameters.clone())?.ready {
-                        0
-                    } else {
-                        2
-                    }
-                } else if method == "PlanUpdate" {
-                    let plan: flatpak_rs::installation::update::Plan =
-                        serde_json::from_value(parameters.clone())?;
-                    plan.validate()?;
-                    0
-                } else if method == "ApplyUpdate" {
-                    let _: flatpak_rs::installation::update::Applied =
-                        serde_json::from_value(parameters.clone())?;
-                    0
-                } else if [
-                    "GetRecoveryStatus",
-                    "ListInstances",
-                    "ListRuntimes",
-                    "Uninstall",
-                    "DeleteData",
-                    "RemoveRuntime",
-                ]
-                .contains(&method)
-                {
-                    0
-                } else {
-                    let _: flatpak_rs::installation::Installed =
-                        serde_json::from_value(parameters.clone())?;
-                    0
-                };
-                println!("{}", serde_json::to_string_pretty(parameters)?);
-                return Ok(code);
+        let response = read_reply(stream)?;
+        if let Some(error) = response.get("error") {
+            let error = error
+                .as_str()
+                .ok_or("invalid service error acknowledgement")?;
+            if !error.contains('.')
+                || !error.split('.').all(|part| {
+                    !part.is_empty() && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                })
+            {
+                return Err("invalid service error name".into());
             }
-            bytes.push(byte);
+            if !response["parameters"].is_object() {
+                return Err("invalid service error parameters".into());
+            }
+            definitive = true;
+            if error == "org.flatpakrs.Manager.UpdateOutcomeUncertain" {
+                return Err(format!("{}: {}", guidance(), response["parameters"]).into());
+            }
+            return Err(format!(
+                "service rejected {method}: {error}: {}",
+                response["parameters"]
+            )
+            .into());
         }
-        Err("service returned a truncated or oversized Varlink reply; inspect journalctl --user -u flatpak-rs.service".into())
+        let parameters = if method == "PlanUpdate" {
+            &response["parameters"]["plan"]
+        } else {
+            &response["parameters"]
+        };
+        let code = if method == "GetHostStatus" {
+            if serde_json::from_value::<flatpak_rs::HostStatus>(parameters.clone())?.ready {
+                0
+            } else {
+                2
+            }
+        } else if method == "PlanUpdate" {
+            let plan: flatpak_rs::installation::update::Plan =
+                serde_json::from_value(parameters.clone())?;
+            plan.validate()?;
+            0
+        } else if method == "ApplyUpdate" {
+            let _: flatpak_rs::installation::update::Applied =
+                serde_json::from_value(parameters.clone())?;
+            0
+        } else if [
+            "GetRecoveryStatus",
+            "ListInstances",
+            "ListRuntimes",
+            "Uninstall",
+            "DeleteData",
+            "RemoveRuntime",
+        ]
+        .contains(&method)
+        {
+            0
+        } else {
+            let _: flatpak_rs::installation::Installed =
+                serde_json::from_value(parameters.clone())?;
+            0
+        };
+        println!("{}", serde_json::to_string_pretty(parameters)?);
+        Ok(code)
     })();
     match result {
         Err(error) if method == "ApplyUpdate" && !definitive => {
@@ -149,6 +148,22 @@ fn run() -> Result<i32, Box<dyn std::error::Error>> {
         }
         result => result,
     }
+}
+
+/// The same bounded socket-read path is exercised with a short timeout in tests.
+fn read_reply(stream: UnixStream) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let mut bytes = Vec::new();
+    for byte in BufReader::new(stream)
+        .bytes()
+        .take(flatpak_rs::MAX_MESSAGE + 1)
+    {
+        let byte = byte?;
+        if byte == 0 {
+            return Ok(serde_json::from_slice(&bytes)?);
+        }
+        bytes.push(byte);
+    }
+    Err("service returned a truncated or oversized Varlink reply; inspect journalctl --user -u flatpak-rs.service".into())
 }
 
 fn main() {
@@ -160,4 +175,23 @@ fn main() {
         }
     };
     std::process::exit(code);
+}
+
+#[cfg(test)]
+mod transport_tests {
+    #[test]
+    fn stalled_management_reply_exercises_actual_socket_timeout() {
+        let (client, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        client
+            .set_read_timeout(Some(std::time::Duration::from_millis(20)))
+            .unwrap();
+        let error = super::read_reply(client).unwrap_err();
+        let error = error
+            .downcast_ref::<std::io::Error>()
+            .expect("actual socket read error");
+        assert!(matches!(
+            error.kind(),
+            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+        ));
+    }
 }

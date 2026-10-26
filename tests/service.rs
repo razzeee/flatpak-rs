@@ -208,4 +208,22 @@ fn real_service_rejects_invalid_requests_and_remains_available() {
         .collect();
     let reply: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(reply["error"], "org.flatpakrs.Manager.UpdateNotInstalled");
+    let file = service.runtime.join("missing-plan.json");
+    std::fs::write(
+        &file,
+        serde_json::to_vec(&request["parameters"]["plan"]).unwrap(),
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_flatpak-rs"))
+        .args(["apply-update", file.to_str().unwrap()])
+        .env("XDG_RUNTIME_DIR", &service.runtime)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let message = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        message.contains("UpdateNotInstalled") && !message.contains("outcome uncertain"),
+        "{message}"
+    );
 }
