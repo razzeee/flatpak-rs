@@ -1,12 +1,12 @@
-# Local update preparation evidence and acceptance matrix (#23)
+# Local update evidence and acceptance matrix (#23–#28)
 
-This records technical preparation for
-[#23](https://github.com/razzeee/flatpak-rs/issues/23), not update implementation,
-completed VM acceptance or machine-power-loss testing. Behavioral specification:
+This records historical technical preparation for
+[#23](https://github.com/razzeee/flatpak-rs/issues/23) and subsequent authorized
+implementation acceptance. It does not claim machine-power-loss testing. Behavioral specification:
 [#22](https://github.com/razzeee/flatpak-rs/issues/22). Concrete decisions are in
 `local-update-protocol.md` and `local-update-storage.md`.
 
-## Evidence obtained on 2026-10-26
+## Preparation evidence obtained on 2026-10-26
 
 Reproducible primitive probe: `validation/local-update-primitives.py`. It creates
 isolated repositories/deployment directories under a supplied work root; it does
@@ -63,7 +63,7 @@ both source-config and commit-metadata checks. The original fork-based exchange
 child emitted a multi-threaded-process warning after GIO imports; the final probe
 uses a fresh subprocess instead.
 
-### What this does not establish
+### What preparation alone did not establish (historical)
 
 - No planning/apply method, production exchange/recovery implementation or fault
   injection has been added to the service.
@@ -120,7 +120,7 @@ Retrieved/read for this preparation:
 
 ## Host-controlled fault-injection contract
 
-Future implementation snapshots these settings from the host service environment
+Implementation snapshots these settings from the host service environment
 at installation construction; they are never accepted in requests/plans/artifacts
 or inherited from the execution client's application environment. No test settings
 means normal production behavior. There is no public transaction-control API.
@@ -139,6 +139,11 @@ means normal production behavior. There is no public transaction-control API.
   At `write-selection`, include a deliberately short write followed by error to
   exercise incomplete private records. Recognized values form closed enums; invalid
   configurations fail update setup rather than silently picking an arbitrary site.
+- `FLATPAK_RS_UPDATE_FAIL_COUNT=1..100` bounds repeated failures per process
+  (default 1), including repeated recovery failures before later mutations.
+- `FLATPAK_RS_UPDATE_DELAY_MS=0..5000` delays the preparing worker once at
+  `prepared`. Other service threads remain runnable. Nonzero delay is apply-only
+  and cannot be combined with a stop checkpoint.
 - `FLATPAK_RS_UPDATE_TEST_PHASE=apply|recovery` scopes both hooks (default apply).
   Recovery includes reconciliation triggered by a later request, not just startup.
   Empty journal initialization is not a checkpoint. Commit-parent sync site names
@@ -165,7 +170,7 @@ reserve check, fill after import/reserve checks and before subsequent checked
 writes. Free the filler and retry/recover; never fill the host's real home or the
 unrelated VM root. Keep the default service security policy intact.
 
-## Required real-service acceptance matrix (not yet run)
+## Required real-service acceptance matrix
 
 Primary seam: CLI → socket-activated per-user service → real libostree/filesystem
 and confined payload. Fixtures come from independent reference exports with distinct
@@ -223,4 +228,74 @@ these choices instead of weakening the approved behavior silently.
 Native `cargo test --locked` also passed during preparation (the existing CLI and
 real-service protocol integration tests). Probe syntax, the protocol's JSON plan
 example, local document pointers and `git diff --check` were checked. These do not
-substitute for the unrun update VM matrix above.
+substitute for implementation acceptance; that subsequent evidence follows.
+
+## Implementation acceptance (2026-10-26)
+
+Full implementation was separately authorized in
+[#22](https://github.com/razzeee/flatpak-rs/issues/22#issuecomment-6426036482).
+Preparation PR #29 is unchanged and unmerged; implementation is on
+`implement-local-updates`, based on preparation commit `7ab3a1b`.
+
+The pinned Rust check and complete real-service VM passed together after adding
+actual ext4 exhaustion and damaged-intent tests (VM script **109.53 seconds**).
+The subsequent full run added missing/mistyped/wrong collection bindings,
+planning during an execution lease, concurrent planning, a separate transaction
+mount and a symlinked journal; both pinned checks passed (**109.70 seconds**).
+Earlier incremental full runs passed planning (45.67s), apply/recovery (51.84s),
+runtime/provider/older pairs (55.41s), lost replies/uncertainty (65.80s), and the
+expanded fault/concurrency/draining matrix (96.49s). These are fresh builds using
+`flake.lock` and `Cargo.lock`, not copied laptop build output. The pinned
+libostree is 2026.2; the earlier desktop primitive probes used 2026.4.
+
+Reproduction:
+
+```sh
+nix build --no-update-lock-file -L .#checks.x86_64-linux.rust .#checks.x86_64-linux.service
+```
+
+On the validation host this ran through nix-portable v012 with `NP_RUNTIME=bwrap`
+and an isolated Nix cache. Rust checks include formatting, all-target checking,
+Clippy with warnings denied, tests and actionlint. Native `cargo test --locked`
+and Clippy also passed. Host logs are under `/tmp/opencode/local-update-*-checks.log`;
+these temporary logs are not repository artifacts. Nix retains driver/VM logs in
+the service-check result.
+
+### External evidence map
+
+| Contract area | Tests and observations |
+| --- | --- |
+| P1–P4, A1–A4 | `update-vm.py`, `update-probe.py`, supplemental service/CLI tests: save/reload, pins, no reservation, older pins, moved/deleted refs, missing/busy/conflict/no-op ordering and preserved data |
+| A5, S1 | `update-input-vm.py`, reference fixture exports: edited identities, unsafe paths, missing/corrupt/incompatible objects, structural hooks, permission diagnostics plus successfully executed confinement assertions |
+| R1–R3 | `update-pairs-vm.py`: runtime-only, combined, older and explicit-provider pairs, complete launched payloads, retention failure and explicit runtime removal |
+| O1–O4 | `update-outcome-vm.py`, `update-fault-vm.py`, CLI transport tests: accepted apply survives client death/source loss, malformed/lost replies, actual socket read timeout, uncertain sync and bounded cleanup warnings |
+| C1–C2 | `update-concurrency.py`: one worker held at preparation while status answers and competing storage clients queue; stale apply conflicts, inspect/run/lifecycle actions observe the completed publication and enforce dependencies |
+| A2, S2 | `owner-death-probe.py`: apply no-op is busy while post-exit output drains, then unchanged after owner-death cleanup releases the lease; complete pre-existing confinement/ownership/lifecycle suite still runs |
+| F1–F4 | `update-crash-vm.py`: all nine stop/kill/restart checkpoints; `update-extended-vm.py`: partial-write/EIO/ENOSPC failures, repeated garbage deletion failures across later update/uninstall/reinstall; fault journal proves repetition |
+| F5, F7 | `update-disk-vm.py`: disposable 96-MiB ext4, actual ENOSPC during copy checkout after import; old selection/data preserved, exact-plan retry succeeds after freeing space; malformed and mismatched sealed evidence blocks operations and survives repeated recovery |
+| F6 | `update-disk-vm.py`: transaction storage on another mounted filesystem rejects atomic exchange without changing the selection; a symlinked update journal fails closed. Unsupported exchange is never replaced with a two-step fallback; an actual unsupported-filesystem/kernel combination was not available for this run |
+
+The actual disk failure was `UpdateFailed`, with libostree reporting
+`regfile copy: No space left on device`. This is distinct from injected ENOSPC.
+Sources, CLI logs and the normal installation remained outside the filled mount.
+Restoring deliberately damaged evidence is test-fixture manipulation only, not
+a product repair feature. Success is checked through inspect/run/data, not private
+journal layout; private paths are used only to introduce faults.
+
+### Review and limits
+
+Implementation review covered exact binding imports, bounded plan/record parsing,
+eligibility ordering, lease/installation lock lifetimes, both exchange parents,
+runtime-retention synchronization, monotonic active-to-garbage recovery, partial
+cleanup after later mutations, and transport uncertainty. It identified and fixed
+private-repository initialization errors being mislabeled as invalid source content;
+typed no-space errors also remain local preparation failures. This is an implementation
+self-review, not an independent security audit.
+
+Process crashes and injected syscall/storage errors are not machine-power-loss
+tests. No claim is made for physical persistence under power loss, arbitrary
+filesystem implementations, NFS (explicitly rejected), automatic repair, publisher
+authentication, data rollback/compatibility, downgrade protection, rollback history,
+general garbage collection, live updates or production readiness. The adapter has
+no remove-then-rename exchange fallback. This suite is project-specific and does
+not execute or claim to pass an upstream Flatpak update suite.

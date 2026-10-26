@@ -3,8 +3,13 @@
 This is an experimental local-artifact demonstrator, not a production-ready
 Flatpak replacement. The contract is issue #1 and `docs/design.md`. No public
 libflatpak-compatible library, publisher authentication, network remotes,
-updates/rollback, appd/portals, desktop integration, foreign architectures,
+rollback, appd/portals, desktop integration, foreign architectures,
 extensions, extra-data, installation hooks or interactive terminals are promised.
+
+The separately authorized follow-up #22 adds transactional local updates, not
+rollback or remote distribution. Its evidence is recorded in
+[local-update-validation.md](local-update-validation.md); the initial-milestone
+results below retain their original provenance.
 
 ## Reproduce
 

@@ -1,9 +1,9 @@
 # Local update storage and recovery contract (#23)
 
-Technical preparation, not implemented update support. Behavioral authority:
+Implemented storage/recovery contract, following technical preparation. Behavioral authority:
 [#22](https://github.com/razzeee/flatpak-rs/issues/22). Public shapes and error
 precedence: `local-update-protocol.md`. Probe results, primary references and
-future real-service acceptance: `local-update-validation.md`.
+real-service acceptance: `local-update-validation.md`.
 
 ## Pinned objects: bind kind and full identity
 

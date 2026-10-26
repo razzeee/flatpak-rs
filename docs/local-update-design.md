@@ -3,8 +3,9 @@
 Status: the user approved the consolidated behavioral summary, specification
 publication and six-ticket breakdown. The specification and implementation
 tickets are published with native parent/blocking relationships. Work on #23's
-technical preparation is now authorized; feature implementation (#24–#28) has
-not been authorized or started.
+technical preparation is complete. The user subsequently authorized the full
+specification, including feature implementation (#24–#28). See
+`local-update-validation.md` for implementation evidence and limitations.
 Published specification: https://github.com/razzeee/flatpak-rs/issues/22.
 See `local-update-specification.md` for the local publication snapshot.
 
@@ -135,7 +136,7 @@ Do not replace enforcement or storage behavior with mocks.
 The concrete protocol, storage/recovery decisions and validation obligations are
 now captured in `local-update-protocol.md`, `local-update-storage.md` and
 `local-update-validation.md`. These refine the approved behavior without adding
-implemented update support. The following were the preparation obligations from
+scope beyond the approved update support. The following were the preparation obligations from
 the interview; real-service proof remains part of the implementation tickets.
 
 - Write the exact bounded/versioned plan and reply/error shapes and CLI/Varlink
@@ -151,7 +152,8 @@ the interview; real-service proof remains part of the implementation tickets.
   through GitHub Issues before implementation.
 
 Shared-understanding confirmation, specification/ticket publication and technical
-preparation #23 were approved. Feature implementation requires separate approval.
+preparation #23 were approved. Separate full implementation approval was subsequently
+recorded in issue #22.
 
 ## Published implementation graph
 
@@ -189,5 +191,5 @@ recovery; later fault coverage does not permit an unsafe intermediate transactio
   data/runtime removal returns `removed: false` after eligibility checks. Install
   validates source content even when its selected revisions are already installed.
 
-These are facts about the current implementation. The confirmed update policies
-above describe the proposed milestone, not update behavior already implemented.
+These are historical facts checked during the interview. The confirmed update
+policies above are now implemented; validation is recorded separately.

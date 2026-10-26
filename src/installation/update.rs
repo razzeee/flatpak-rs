@@ -175,21 +175,39 @@ fn prepare(
     sources: &Sources,
     selection: &Selection,
     stage: &Path,
-) -> Result<(storage::Source, Installed)> {
+) -> std::result::Result<(storage::Source, Installed), Error> {
     let objects = stage.join("object-repo");
-    let prepared = storage::Source::empty(&objects)?;
-    storage::Source::open(&sources.app)?.import_revision(&selection.app, "app", &prepared)?;
-    storage::Source::open(&sources.runtime)?.import_revision(
-        &selection.runtime,
-        "runtime",
-        &prepared,
-    )?;
-    let diagnostics = storage::validate(
-        &selection.app,
-        &prepared.metadata(&selection.app)?,
-        &selection.runtime,
-        &prepared.metadata(&selection.runtime)?,
-    )?;
+    let prepared = storage::Source::empty(&objects).map_err(Error::failed)?;
+    let validate_source = || -> Result<Vec<String>> {
+        storage::Source::open(&sources.app)?.import_revision(&selection.app, "app", &prepared)?;
+        storage::Source::open(&sources.runtime)?.import_revision(
+            &selection.runtime,
+            "runtime",
+            &prepared,
+        )?;
+        storage::validate(
+            &selection.app,
+            &prepared.metadata(&selection.app)?,
+            &selection.runtime,
+            &prepared.metadata(&selection.runtime)?,
+        )
+    };
+    let diagnostics = validate_source().map_err(|error| {
+        if error
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|e| matches!(e.raw_os_error(), Some(libc::ENOSPC | libc::EIO)))
+            || error.downcast_ref::<glib::Error>().is_some_and(|e| {
+                matches!(
+                    e.kind::<gio::IOErrorEnum>(),
+                    Some(gio::IOErrorEnum::NoSpace)
+                )
+            })
+        {
+            Error::failed(error)
+        } else {
+            Error::source(error)
+        }
+    })?;
     Ok((
         prepared,
         Installed {
@@ -270,9 +288,7 @@ impl Installation {
                 .create(&stage)
                 .map_err(Error::failed)?;
         }
-        let result = prepare(&plan.sources, &plan.desired, &stage)
-            .map(|(_, installed)| installed)
-            .map_err(Error::source);
+        let result = prepare(&plan.sources, &plan.desired, &stage).map(|(_, installed)| installed);
         if let Err(error) = remove_tree(&stage) {
             eprintln!("planning cleanup pending: {error}");
         }
@@ -348,8 +364,7 @@ impl Installation {
         let mut txn =
             transaction::Transaction::new(&operation.root, &plan.target).map_err(Error::failed)?;
         let result = (|| -> std::result::Result<Applied, Error> {
-            let (prepared, selected) =
-                prepare(&plan.sources, &plan.desired, &txn.path).map_err(Error::source)?;
+            let (prepared, selected) = prepare(&plan.sources, &plan.desired, &txn.path)?;
             let faults = &self.update_faults;
             faults.checkpoint("apply", "imported");
             let slot = txn.path.join("slot");

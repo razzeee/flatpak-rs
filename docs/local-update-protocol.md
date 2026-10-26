@@ -1,8 +1,7 @@
 # Local update protocol contract (#23)
 
 Technical preparation for [#22](https://github.com/razzeee/flatpak-rs/issues/22).
-These are decisions for future implementation, not methods supported by the
-current binaries. Work on #23 only is authorized; #24–#28 remain separately gated.
+Implemented by the separately authorized #24–#28 work following preparation #23.
 The behavioral scope remains the approved specification. Read
 `local-update-storage.md` for publication/recovery and
 `local-update-validation.md` for evidence and the acceptance matrix.
