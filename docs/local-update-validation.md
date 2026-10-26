@@ -242,6 +242,13 @@ actual ext4 exhaustion and damaged-intent tests (VM script **109.53 seconds**).
 The subsequent full run added missing/mistyped/wrong collection bindings,
 planning during an execution lease, concurrent planning, a separate transaction
 mount and a symlinked journal; both pinned checks passed (**109.70 seconds**).
+The final code/test run, including the explicit cross-device-error assertion,
+passed both checks (**111.84 seconds**) for the implementation in `fa22e8a`:
+
+- Rust result: `/nix/store/svd1kjkfyqdm80rxj1rlpb0dhyh3m478-flatpak-rs-rust-checks-0.1.0`
+- VM result: `/nix/store/9rvqlpwvmqphksvnygznnzgdgq2bw9ci-vm-test-run-flatpak-rs-service`
+
+Only this acceptance-record addition follows that run; no feature/test code changed.
 Earlier incremental full runs passed planning (45.67s), apply/recovery (51.84s),
 runtime/provider/older pairs (55.41s), lost replies/uncertainty (65.80s), and the
 expanded fault/concurrency/draining matrix (96.49s). These are fresh builds using
