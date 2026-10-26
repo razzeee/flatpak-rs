@@ -94,6 +94,8 @@ flatpak build-export --disable-sandbox --collection-id=org.example.Collection \
 cp -a "$out/repo" "$out/update-runtime"
 printf 'changed runtime\n' >> "$out/runtime/usr/payload"
 flatpak build-export --disable-sandbox --runtime --collection-id=org.example.Collection "$out/update-runtime" "$out/runtime" stable
+ostree --repo="$out/update-app" rev-parse app/org.example.Fixture/x86_64/stable > "$out/update-app-commit"
+ostree --repo="$out/update-runtime" rev-parse runtime/org.example.Platform/x86_64/stable > "$out/update-runtime-commit"
 
 # Deliberately corrupt a payload in a valid bare repository without changing its
 # advertised checksum. The service must not silently install this under that ID.

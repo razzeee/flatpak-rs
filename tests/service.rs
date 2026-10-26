@@ -159,4 +159,32 @@ fn real_service_rejects_invalid_requests_and_remains_available() {
             .iter()
             .any(|check| check["name"] == "cgroup_control" && check["available"] == false)
     );
+
+    let mut planning = service.connect();
+    let target = serde_json::json!({"collection":"org.example.Collection", "id":"org.example.Missing",
+        "arch":std::env::consts::ARCH, "branch":"stable"});
+    let request = serde_json::json!({"method":"org.flatpakrs.Manager.PlanUpdate", "parameters":{
+        "source":"/missing/source", "app":target, "runtime":{
+            "collection":"org.example.Collection", "id":"org.example.Platform",
+            "arch":std::env::consts::ARCH, "branch":"stable"}}});
+    planning
+        .write_all(&serde_json::to_vec(&request).unwrap())
+        .unwrap();
+    planning.write_all(&[0]).unwrap();
+    let bytes: Vec<_> = BufReader::new(planning)
+        .bytes()
+        .map(Result::unwrap)
+        .take_while(|b| *b != 0)
+        .collect();
+    let reply: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(reply["error"], "org.flatpakrs.Manager.UpdateNotInstalled");
+    assert_eq!(reply["parameters"]["target"], target);
+
+    let mut duplicate = service.connect();
+    duplicate.write_all(b"{\"method\":\"org.flatpakrs.Manager.PlanUpdate\",\"parameters\":{},\"parameters\":{}}\0").unwrap();
+    assert_eq!(
+        duplicate.read(&mut [0]).unwrap(),
+        0,
+        "duplicate members must be rejected before dispatch"
+    );
 }

@@ -12,6 +12,7 @@ use std::sync::{
 
 mod lifecycle;
 mod storage;
+pub mod update;
 pub use lifecycle::{Removed, Runtimes};
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 type Running = Arc<Mutex<HashSet<Variant>>>;
@@ -255,7 +256,7 @@ pub struct Revision {
     pub commit: String,
 }
 
-#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Installed {
     pub app: Revision,
     pub runtime: Revision,

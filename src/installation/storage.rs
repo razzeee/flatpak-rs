@@ -6,6 +6,61 @@ use std::path::Path;
 pub(super) struct Source(ostree::Repo);
 
 impl Source {
+    pub(super) fn empty(destination: &Path) -> Result<Self> {
+        let repo = ostree::Repo::new(&gio::File::for_path(destination));
+        repo.create(ostree::RepoMode::BareUserOnly, gio::Cancellable::NONE)?;
+        Ok(Self(repo))
+    }
+
+    pub(super) fn import_revision(
+        &self,
+        revision: &Revision,
+        kind: &str,
+        destination: &Self,
+    ) -> Result<()> {
+        if self.0.collection_id().as_deref() != Some(&revision.variant.collection) {
+            return Err(
+                "explicit collection does not match local repository collection identity".into(),
+            );
+        }
+        let reference = format!(
+            "{kind}/{}/{}/{}",
+            revision.variant.id, revision.variant.arch, revision.variant.branch
+        );
+        let options = glib::VariantDict::new(None);
+        options.insert(
+            "collection-refs",
+            &[(
+                revision.variant.collection.as_str(),
+                reference.as_str(),
+                revision.commit.as_str(),
+            )][..],
+        );
+        options.insert("flags", ostree::RepoPullFlags::UNTRUSTED.bits() as i32);
+        options.insert("depth", 0i32);
+        options.insert("gpg-verify", false);
+        options.insert("gpg-verify-summary", false);
+        options.insert("disable-static-deltas", true);
+        destination.0.pull_with_options(
+            &self.0.path().uri(),
+            &options.end(),
+            None,
+            gio::Cancellable::NONE,
+        )?;
+        let (commit, _) = destination.0.load_commit(&revision.commit)?;
+        let attributes = glib::VariantDict::new(Some(&commit.child_value(0)));
+        let collection = attributes.lookup::<String>("ostree.collection-binding")?;
+        let refs = attributes.lookup::<Vec<String>>("ostree.ref-binding")?;
+        if collection.as_deref() != Some(&revision.variant.collection)
+            || !refs.is_some_and(|refs| refs.contains(&reference))
+        {
+            return Err(
+                "pinned commit collection/ref binding does not match selected identity".into(),
+            );
+        }
+        Ok(())
+    }
+
     pub(super) fn open(path: &Path) -> Result<Self> {
         use std::os::unix::ffi::OsStrExt;
         if !path.is_absolute() || path.as_os_str().as_bytes().contains(&0) {

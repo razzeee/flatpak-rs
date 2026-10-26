@@ -23,3 +23,16 @@ method RemoveRuntime(collection: string, id: string, arch: string, branch: strin
 method ListRuntimes() -> (runtimes: []Revision)
 
 error OperationFailed(detail: string)
+
+type UpdateSelection (app: Revision, runtime: Revision)
+type UpdateSources (app: string, runtime: string)
+type UpdatePlan (format_version: int, target: Variant, expected: UpdateSelection, desired: UpdateSelection, sources: UpdateSources)
+method PlanUpdate(source: string, app: Variant, runtime: Variant, runtime_source: ?string, app_commit: ?string, runtime_commit: ?string) -> (plan: UpdatePlan)
+error UpdateInvalidPlan(detail: string)
+error UpdateNotInstalled(target: Variant)
+error UpdateBusy(target: Variant)
+error UpdateConflict(current: UpdateSelection)
+error UpdateSourceInvalid(detail: string)
+error UpdateFailed(detail: string)
+error UpdateOutcomeUncertain(detail: string)
+error UpdateRecoveryRequired(detail: string)

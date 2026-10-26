@@ -13,6 +13,17 @@ fn run() -> Result<i32, Box<dyn std::error::Error>> {
         })
     };
     let (method, parameters) = match args.first().map(String::as_str) {
+        Some("plan-update") if args.len() >= 9 => {
+            let mut parameters = serde_json::json!({"source":args[1], "app":variant(&args[2..6]),
+                "runtime":{"collection":args[6],"id":args[7],"arch":args[4],"branch":args[8]}});
+            if !(args.len() - 9).is_multiple_of(2) { return Err("update options require values".into()); }
+            for option in args[9..].as_chunks::<2>().0 {
+                let key = match option[0].as_str() { "--runtime-source" => "runtime_source", "--app-commit" => "app_commit", "--runtime-commit" => "runtime_commit", _ => return Err("unknown update option".into()) };
+                if parameters.get(key).is_some() { return Err("duplicate update option".into()); }
+                parameters[key] = option[1].clone().into();
+            }
+            ("PlanUpdate", parameters)
+        }
         Some("status") if args.len() == 1 => ("GetHostStatus", serde_json::json!({})),
         Some("recovery-status") if args.len() == 1 => ("GetRecoveryStatus", serde_json::json!({})),
         Some("instances") if args.len() == 1 => ("ListInstances", serde_json::json!({})),
@@ -25,17 +36,19 @@ fn run() -> Result<i32, Box<dyn std::error::Error>> {
             "runtime_source": if args.len() == 11 { Some(&args[10]) } else { None },
             "runtime": {"collection": args[6], "id": args[7], "arch": args[4], "branch": args[8]}
         })),
-        _ => return Err("usage: flatpak-rs status | recovery-status | instances | runtimes | inspect/uninstall/delete-data/remove-runtime COLLECTION ID ARCH BRANCH | install SOURCE COLLECTION APP ARCH BRANCH RUNTIME_COLLECTION RUNTIME RUNTIME_BRANCH [--runtime-source PATH] | run COLLECTION APP ARCH BRANCH [--memory-mib N] [--pids N] -- COMMAND [ARG...] (experimental; strict confinement only)".into()),
+        _ => return Err("usage: flatpak-rs status | recovery-status | instances | runtimes | inspect/uninstall/delete-data/remove-runtime COLLECTION ID ARCH BRANCH | install/plan-update SOURCE COLLECTION APP ARCH BRANCH RUNTIME_COLLECTION RUNTIME RUNTIME_BRANCH [--runtime-source PATH] [plan-update: --app-commit COMMIT --runtime-commit COMMIT] | run COLLECTION APP ARCH BRANCH [--memory-mib N] [--pids N] -- COMMAND [ARG...] (experimental; strict confinement only)".into()),
     };
     let path = flatpak_rs::socket_path()?;
     let mut stream = UnixStream::connect(&path).map_err(|e| {
         format!("cannot connect to {}: {e}; install and start flatpak-rs.socket with systemctl --user enable --now flatpak-rs.socket; inspect journalctl --user -u flatpak-rs.service", path.display())
     })?;
-    stream.set_read_timeout(Some(Duration::from_secs(if method == "Install" {
-        300
-    } else {
-        15
-    })))?;
+    stream.set_read_timeout(Some(Duration::from_secs(
+        if ["Install", "PlanUpdate", "ApplyUpdate"].contains(&method) {
+            300
+        } else {
+            15
+        },
+    )))?;
     stream.set_write_timeout(Some(Duration::from_secs(15)))?;
     serde_json::to_writer(
         &mut stream,
@@ -59,13 +72,22 @@ fn run() -> Result<i32, Box<dyn std::error::Error>> {
                 )
                 .into());
             }
-            let parameters = &response["parameters"];
+            let parameters = if method == "PlanUpdate" {
+                &response["parameters"]["plan"]
+            } else {
+                &response["parameters"]
+            };
             let code = if method == "GetHostStatus" {
                 if serde_json::from_value::<flatpak_rs::HostStatus>(parameters.clone())?.ready {
                     0
                 } else {
                     2
                 }
+            } else if method == "PlanUpdate" {
+                let plan: flatpak_rs::installation::update::Plan =
+                    serde_json::from_value(parameters.clone())?;
+                plan.validate()?;
+                0
             } else if [
                 "GetRecoveryStatus",
                 "ListInstances",

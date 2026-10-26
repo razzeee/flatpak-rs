@@ -160,6 +160,17 @@ fn dispatch(request: Value, installation: &Installation) -> Option<Value> {
             Value::Object(parameters.clone()),
             |request| installation.install(request),
         ),
+        "org.flatpakrs.Manager.PlanUpdate" => {
+            match serde_json::from_value(Value::Object(parameters.clone())) {
+                Err(_) => error("InvalidParameter", json!({"parameter":"parameters"})),
+                Ok(request) => match installation.plan_update(request) {
+                    Ok(plan) => json!({"parameters":{"plan":plan}}),
+                    Err(error) => {
+                        json!({"error":format!("org.flatpakrs.Manager.{}",error.name), "parameters":error.parameters})
+                    }
+                },
+            }
+        }
         "org.flatpakrs.Manager.Inspect" => operation::<crate::installation::Variant, _>(
             Value::Object(parameters.clone()),
             |variant| installation.inspect(variant),
@@ -224,7 +235,7 @@ fn serve(mut stream: UnixStream, installation: &Installation) -> io::Result<()> 
             return Ok(());
         }
         if byte[0] == 0 {
-            let Ok(request) = serde_json::from_slice::<Value>(&frame) else {
+            let Ok(request) = crate::wire::strict_json(&frame) else {
                 return Ok(());
             };
             if !request

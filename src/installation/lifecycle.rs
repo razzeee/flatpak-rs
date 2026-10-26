@@ -17,7 +17,7 @@ pub struct Runtimes {
     runtimes: Vec<Revision>,
 }
 
-fn stage_path(root: &Path, prefix: &str) -> Result<PathBuf> {
+pub(super) fn stage_path(root: &Path, prefix: &str) -> Result<PathBuf> {
     let staging = root.join(".staging");
     directory(&staging)?;
     let nonce = std::time::SystemTime::now()

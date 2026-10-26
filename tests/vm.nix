@@ -17,7 +17,7 @@ let fixtures = pkgs.runCommand "flatpak-rs-install-fixtures" {
     boot.kernel.sysctl."vm.panic_on_oom" = pkgs.lib.mkForce 0;
     users.users.alice = { isNormalUser = true; uid = 1000; linger = true; };
     users.users.bob = { isNormalUser = true; uid = 1001; };
-    environment.systemPackages = [ package pkgs.python3 pkgs.util-linux pkgs.flatpak ];
+    environment.systemPackages = [ package pkgs.python3 pkgs.util-linux pkgs.flatpak pkgs.ostree ];
     systemd.packages = [ package ];
     systemd.user.sockets.flatpak-rs.wantedBy = [ "sockets.target" ];
     environment.etc."varlink-probe.py".source = ./varlink-probe.py;
@@ -90,6 +90,7 @@ let fixtures = pkgs.runCommand "flatpak-rs-install-fixtures" {
 
     exec(${builtins.toJSON (builtins.readFile ./install-vm.py)})
     exec(${builtins.toJSON (builtins.readFile ./recovery-vm.py)})
+    exec(${builtins.toJSON (builtins.readFile ./update-vm.py)})
     exec(${builtins.toJSON (builtins.readFile ./execution-vm.py)})
     exec(${builtins.toJSON (builtins.readFile ./security-vm.py)})
 
