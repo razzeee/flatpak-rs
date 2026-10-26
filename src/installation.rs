@@ -2,7 +2,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -25,6 +25,7 @@ pub struct Installation {
     operations: Mutex<bool>,
     discarded: AtomicUsize,
     running: Running,
+    update_faults: update::Faults,
 }
 
 /// Private transaction scope: holds serialization over a validated root whose
@@ -50,6 +51,7 @@ impl Installation {
             operations: Mutex::new(false),
             discarded: AtomicUsize::new(0),
             running: Arc::new(Mutex::new(HashSet::new())),
+            update_faults: update::Faults::from_environment(),
         }
     }
 
@@ -59,6 +61,7 @@ impl Installation {
             .lock()
             .map_err(|_| "installation lock poisoned")?;
         let root = self.root()?;
+        update::recover(&root, &self.update_faults)?;
         if !*recovered {
             let discarded = recover_stages(&root)?;
             self.discarded.store(discarded, Ordering::Relaxed);
@@ -257,8 +260,11 @@ pub struct Revision {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Installed {
+    #[serde(deserialize_with = "update::revision")]
     pub app: Revision,
+    #[serde(deserialize_with = "update::revision")]
     pub runtime: Revision,
     pub diagnostics: Vec<String>,
 }
@@ -315,12 +321,23 @@ impl Installation {
 }
 
 fn read(path: &Path) -> Result<Installed> {
-    directory(path)?;
+    if !fs::symlink_metadata(path)?.is_dir() {
+        return Err("deployment must be a real directory".into());
+    }
     let file = OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path.join("selection.json"))?;
-    Ok(serde_json::from_reader(file)?)
+    if !file.metadata()?.is_file() {
+        return Err("selection must be a regular file".into());
+    }
+    let mut bytes = Vec::new();
+    file.take(crate::MAX_MESSAGE as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > crate::MAX_MESSAGE {
+        return Err("oversized installed selection".into());
+    }
+    Ok(serde_json::from_value(crate::wire::strict_json(&bytes)?)?)
 }
 
 impl Installation {

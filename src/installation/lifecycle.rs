@@ -71,7 +71,16 @@ fn records(root: &Path) -> Result<Vec<(PathBuf, Installed)>> {
     Ok(result)
 }
 
-fn retain_runtime(root: &Path, deployment: &Path, revision: &Revision) -> Result<()> {
+pub(super) fn retain_runtime(root: &Path, deployment: &Path, revision: &Revision) -> Result<()> {
+    retain_runtime_checked(root, deployment, revision, || Ok(()))
+}
+
+pub(super) fn retain_runtime_checked(
+    root: &Path,
+    deployment: &Path,
+    revision: &Revision,
+    before_parent_sync: impl Fn() -> Result<()>,
+) -> Result<()> {
     let pool = root.join("runtimes");
     directory(&pool)?;
     let branch = revision.variant.path(&pool)?;
@@ -88,6 +97,9 @@ fn retain_runtime(root: &Path, deployment: &Path, revision: &Revision) -> Result
         if stored != *revision {
             return Err("retained runtime identity mismatch".into());
         }
+        super::update::sync_tree(&destination)?;
+        before_parent_sync()?;
+        File::open(&branch)?.sync_all()?;
         return Ok(());
     }
     let stage = stage_path(root, "retain-runtime")?;
@@ -102,6 +114,8 @@ fn retain_runtime(root: &Path, deployment: &Path, revision: &Revision) -> Result
         record.sync_all()?;
         File::open(&stage)?.sync_all()?;
         fs::rename(&stage, &destination)?;
+        super::update::sync_tree(&destination)?;
+        before_parent_sync()?;
         File::open(&branch)?.sync_all()?;
         Ok(())
     })();

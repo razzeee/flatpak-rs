@@ -187,4 +187,25 @@ fn real_service_rejects_invalid_requests_and_remains_available() {
         0,
         "duplicate members must be rejected before dispatch"
     );
+
+    let app = serde_json::json!({"collection":"org.example.Collection","id":"org.example.Missing",
+        "arch":std::env::consts::ARCH,"branch":"stable","commit":"a".repeat(64)});
+    let runtime = serde_json::json!({"collection":"org.example.Collection","id":"org.example.Platform",
+        "arch":std::env::consts::ARCH,"branch":"stable","commit":"b".repeat(64)});
+    let pair = serde_json::json!({"app":app,"runtime":runtime});
+    let plan = serde_json::json!({"format_version":1,"target":target,"expected":pair,"desired":pair,
+        "sources":{"app":"/missing/source","runtime":"/missing/source"}});
+    let mut apply = service.connect();
+    let request = serde_json::json!({"method":"org.flatpakrs.Manager.ApplyUpdate","parameters":{"plan":plan}});
+    apply
+        .write_all(&serde_json::to_vec(&request).unwrap())
+        .unwrap();
+    apply.write_all(&[0]).unwrap();
+    let bytes: Vec<_> = BufReader::new(apply)
+        .bytes()
+        .map(Result::unwrap)
+        .take_while(|b| *b != 0)
+        .collect();
+    let reply: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(reply["error"], "org.flatpakrs.Manager.UpdateNotInstalled");
 }

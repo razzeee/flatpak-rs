@@ -3,6 +3,65 @@ use super::{Result, Revision, Variant};
 use gio::prelude::*;
 use std::path::Path;
 
+/// Atomic moves are confined to validated service-owned directories, never sources.
+pub(super) fn rename_private(source: &Path, destination: &Path, exchange: bool) -> Result<()> {
+    use std::os::{fd::AsRawFd, unix::fs::OpenOptionsExt};
+    let open = |path: &Path| {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+            .open(path)
+    };
+    let old = open(source.parent().ok_or("missing source parent")?)?;
+    let new = open(destination.parent().ok_or("missing destination parent")?)?;
+    let a = std::ffi::CString::new(
+        source
+            .file_name()
+            .ok_or("missing source name")?
+            .as_encoded_bytes(),
+    )?;
+    let b = std::ffi::CString::new(
+        destination
+            .file_name()
+            .ok_or("missing destination name")?
+            .as_encoded_bytes(),
+    )?;
+    if exchange {
+        if !std::fs::symlink_metadata(source)?.is_dir()
+            || !std::fs::symlink_metadata(destination)?.is_dir()
+        {
+            return Err("atomic update requires real deployment directories".into());
+        }
+        // SAFETY: fstatfs fills a correctly sized output for an open directory.
+        let mut stats: libc::statfs = unsafe { std::mem::zeroed() };
+        if unsafe { libc::fstatfs(new.as_raw_fd(), &mut stats) } != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        if stats.f_type == 0x6969 {
+            return Err("NFS is not supported for atomic local updates".into());
+        }
+    }
+    // SAFETY: directory descriptors and NUL-terminated single-component names
+    // remain live; the kernel performs the atomic exchange/non-overwriting move.
+    if unsafe {
+        libc::renameat2(
+            old.as_raw_fd(),
+            a.as_ptr(),
+            new.as_raw_fd(),
+            b.as_ptr(),
+            if exchange {
+                libc::RENAME_EXCHANGE
+            } else {
+                libc::RENAME_NOREPLACE
+            },
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(())
+}
+
 pub(super) struct Source(ostree::Repo);
 
 impl Source {

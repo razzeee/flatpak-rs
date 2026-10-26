@@ -25,6 +25,7 @@ let fixtures = pkgs.runCommand "flatpak-rs-install-fixtures" {
     environment.etc."foreground-probe.py".source = ./foreground-probe.py;
     environment.etc."owner-death-probe.py".source = ./owner-death-probe.py;
     environment.etc."instance-probe.py".source = ./instance-probe.py;
+    environment.etc."update-probe.py".source = ./update-probe.py;
     environment.etc."lifecycle-probe.py".source = ./lifecycle-probe.py;
     environment.etc."execution-ipc-probe.py".source = ./execution-ipc-probe.py;
     environment.etc."deny-mount.conf".text = ''
@@ -91,6 +92,8 @@ let fixtures = pkgs.runCommand "flatpak-rs-install-fixtures" {
     exec(${builtins.toJSON (builtins.readFile ./install-vm.py)})
     exec(${builtins.toJSON (builtins.readFile ./recovery-vm.py)})
     exec(${builtins.toJSON (builtins.readFile ./update-vm.py)})
+    exec(${builtins.toJSON (builtins.readFile ./update-crash-vm.py)})
+    exec(${builtins.toJSON (builtins.readFile ./update-fault-vm.py)})
     exec(${builtins.toJSON (builtins.readFile ./execution-vm.py)})
     exec(${builtins.toJSON (builtins.readFile ./security-vm.py)})
 

@@ -1,6 +1,54 @@
 use std::process::Command;
 
 #[test]
+fn malformed_apply_acknowledgement_reports_uncertain_outcome() {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixListener;
+    // A transport-only peer: no storage or transaction behavior is substituted.
+    let directory = std::env::temp_dir().join(format!("flatpak-rs-cli-{}", std::process::id()));
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::create_dir(directory.join("flatpak-rs")).unwrap();
+    let app = serde_json::json!({"collection":"org.example.Collection","id":"org.example.App",
+        "arch":std::env::consts::ARCH,"branch":"stable","commit":"a".repeat(64)});
+    let pair = serde_json::json!({"app":app,"runtime":app});
+    let plan = serde_json::json!({"format_version":1,"target":{"collection":"org.example.Collection",
+        "id":"org.example.App","arch":std::env::consts::ARCH,"branch":"stable"},
+        "expected":pair,"desired":pair,"sources":{"app":"/unavailable","runtime":"/unavailable"}});
+    let file = directory.join("plan.json");
+    std::fs::write(&file, serde_json::to_vec(&plan).unwrap()).unwrap();
+    let socket = directory.join("flatpak-rs/management.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let peer = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut byte = [0];
+        loop {
+            stream.read_exact(&mut byte).unwrap();
+            if byte == [0] {
+                break;
+            }
+        }
+        stream
+            .write_all(b"{\"error\":null,\"parameters\":{}}\0")
+            .unwrap();
+    });
+    let output = Command::new(env!("CARGO_BIN_EXE_flatpak-rs"))
+        .args(["apply-update", file.to_str().unwrap()])
+        .env("XDG_RUNTIME_DIR", &directory)
+        .output()
+        .unwrap();
+    peer.join().unwrap();
+    std::fs::remove_dir_all(&directory).unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let message = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        message.contains("outcome uncertain")
+            && message.contains("inspect org.example.Collection org.example.App"),
+        "{message}"
+    );
+}
+
+#[test]
 fn connection_failure_is_actionable() {
     let result = Command::new(env!("CARGO_BIN_EXE_flatpak-rs"))
         .arg("status")

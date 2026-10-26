@@ -13,6 +13,12 @@ fn run() -> Result<i32, Box<dyn std::error::Error>> {
         })
     };
     let (method, parameters) = match args.first().map(String::as_str) {
+        Some("apply-update") if args.len() == 2 => {
+            let mut bytes = Vec::new();
+            std::fs::File::open(&args[1])?.take(flatpak_rs::installation::update::MAX_PLAN as u64 + 1).read_to_end(&mut bytes)?;
+            let plan = flatpak_rs::installation::update::Plan::from_json(&bytes)?;
+            ("ApplyUpdate", serde_json::json!({"plan":plan}))
+        }
         Some("plan-update") if args.len() >= 9 => {
             let mut parameters = serde_json::json!({"source":args[1], "app":variant(&args[2..6]),
                 "runtime":{"collection":args[6],"id":args[7],"arch":args[4],"branch":args[8]}});
@@ -36,7 +42,7 @@ fn run() -> Result<i32, Box<dyn std::error::Error>> {
             "runtime_source": if args.len() == 11 { Some(&args[10]) } else { None },
             "runtime": {"collection": args[6], "id": args[7], "arch": args[4], "branch": args[8]}
         })),
-        _ => return Err("usage: flatpak-rs status | recovery-status | instances | runtimes | inspect/uninstall/delete-data/remove-runtime COLLECTION ID ARCH BRANCH | install/plan-update SOURCE COLLECTION APP ARCH BRANCH RUNTIME_COLLECTION RUNTIME RUNTIME_BRANCH [--runtime-source PATH] [plan-update: --app-commit COMMIT --runtime-commit COMMIT] | run COLLECTION APP ARCH BRANCH [--memory-mib N] [--pids N] -- COMMAND [ARG...] (experimental; strict confinement only)".into()),
+        _ => return Err("usage: flatpak-rs status | recovery-status | instances | runtimes | inspect/uninstall/delete-data/remove-runtime COLLECTION ID ARCH BRANCH | install/plan-update SOURCE COLLECTION APP ARCH BRANCH RUNTIME_COLLECTION RUNTIME RUNTIME_BRANCH [--runtime-source PATH] [plan-update: --app-commit COMMIT --runtime-commit COMMIT] | apply-update PLAN_FILE | run COLLECTION APP ARCH BRANCH [--memory-mib N] [--pids N] -- COMMAND [ARG...] (experimental; strict confinement only)".into()),
     };
     let path = flatpak_rs::socket_path()?;
     let mut stream = UnixStream::connect(&path).map_err(|e| {
@@ -50,66 +56,99 @@ fn run() -> Result<i32, Box<dyn std::error::Error>> {
         },
     )))?;
     stream.set_write_timeout(Some(Duration::from_secs(15)))?;
-    serde_json::to_writer(
-        &mut stream,
-        &serde_json::json!({
-            "method": format!("org.flatpakrs.Manager.{method}"), "parameters": parameters
-        }),
-    )?;
-    stream.write_all(&[0])?;
-    let mut bytes = Vec::new();
-    for byte in BufReader::new(stream)
-        .bytes()
-        .take(flatpak_rs::MAX_MESSAGE + 1)
-    {
-        let byte = byte?;
-        if byte == 0 {
-            let response: serde_json::Value = serde_json::from_slice(&bytes)?;
-            if let Some(error) = response.get("error") {
-                return Err(format!(
-                    "service rejected {method}: {error}: {}",
-                    response["parameters"]
-                )
-                .into());
-            }
-            let parameters = if method == "PlanUpdate" {
-                &response["parameters"]["plan"]
-            } else {
-                &response["parameters"]
-            };
-            let code = if method == "GetHostStatus" {
-                if serde_json::from_value::<flatpak_rs::HostStatus>(parameters.clone())?.ready {
+    let guidance = || {
+        let t = &parameters["plan"]["target"];
+        format!(
+            "update outcome uncertain; inspect {} {} {} {} before retrying the same saved plan",
+            t["collection"].as_str().unwrap_or("COLLECTION"),
+            t["id"].as_str().unwrap_or("ID"),
+            t["arch"].as_str().unwrap_or("ARCH"),
+            t["branch"].as_str().unwrap_or("BRANCH")
+        )
+    };
+    let mut definitive = false;
+    let result = (|| -> Result<i32, Box<dyn std::error::Error>> {
+        serde_json::to_writer(
+            &mut stream,
+            &serde_json::json!({
+                "method": format!("org.flatpakrs.Manager.{method}"), "parameters": parameters
+            }),
+        )?;
+        stream.write_all(&[0])?;
+        let mut bytes = Vec::new();
+        for byte in BufReader::new(stream)
+            .bytes()
+            .take(flatpak_rs::MAX_MESSAGE + 1)
+        {
+            let byte = byte?;
+            if byte == 0 {
+                let response: serde_json::Value = serde_json::from_slice(&bytes)?;
+                if let Some(error) = response.get("error") {
+                    let error = error
+                        .as_str()
+                        .ok_or("invalid service error acknowledgement")?;
+                    if !response["parameters"].is_object() {
+                        return Err("invalid service error parameters".into());
+                    }
+                    definitive = true;
+                    if error == "org.flatpakrs.Manager.UpdateOutcomeUncertain" {
+                        return Err(format!("{}: {}", guidance(), response["parameters"]).into());
+                    }
+                    return Err(format!(
+                        "service rejected {method}: {error}: {}",
+                        response["parameters"]
+                    )
+                    .into());
+                }
+                let parameters = if method == "PlanUpdate" {
+                    &response["parameters"]["plan"]
+                } else {
+                    &response["parameters"]
+                };
+                let code = if method == "GetHostStatus" {
+                    if serde_json::from_value::<flatpak_rs::HostStatus>(parameters.clone())?.ready {
+                        0
+                    } else {
+                        2
+                    }
+                } else if method == "PlanUpdate" {
+                    let plan: flatpak_rs::installation::update::Plan =
+                        serde_json::from_value(parameters.clone())?;
+                    plan.validate()?;
+                    0
+                } else if method == "ApplyUpdate" {
+                    let _: flatpak_rs::installation::update::Applied =
+                        serde_json::from_value(parameters.clone())?;
+                    0
+                } else if [
+                    "GetRecoveryStatus",
+                    "ListInstances",
+                    "ListRuntimes",
+                    "Uninstall",
+                    "DeleteData",
+                    "RemoveRuntime",
+                ]
+                .contains(&method)
+                {
                     0
                 } else {
-                    2
-                }
-            } else if method == "PlanUpdate" {
-                let plan: flatpak_rs::installation::update::Plan =
-                    serde_json::from_value(parameters.clone())?;
-                plan.validate()?;
-                0
-            } else if [
-                "GetRecoveryStatus",
-                "ListInstances",
-                "ListRuntimes",
-                "Uninstall",
-                "DeleteData",
-                "RemoveRuntime",
-            ]
-            .contains(&method)
-            {
-                0
-            } else {
-                let _: flatpak_rs::installation::Installed =
-                    serde_json::from_value(parameters.clone())?;
-                0
-            };
-            println!("{}", serde_json::to_string_pretty(parameters)?);
-            return Ok(code);
+                    let _: flatpak_rs::installation::Installed =
+                        serde_json::from_value(parameters.clone())?;
+                    0
+                };
+                println!("{}", serde_json::to_string_pretty(parameters)?);
+                return Ok(code);
+            }
+            bytes.push(byte);
         }
-        bytes.push(byte);
+        Err("service returned a truncated or oversized Varlink reply; inspect journalctl --user -u flatpak-rs.service".into())
+    })();
+    match result {
+        Err(error) if method == "ApplyUpdate" && !definitive => {
+            Err(format!("{}: {error}", guidance()).into())
+        }
+        result => result,
     }
-    Err("service returned a truncated or oversized Varlink reply; inspect journalctl --user -u flatpak-rs.service".into())
 }
 
 fn main() {
