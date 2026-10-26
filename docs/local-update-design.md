@@ -2,8 +2,9 @@
 
 Status: the user approved the consolidated behavioral summary, specification
 publication and six-ticket breakdown. The specification and implementation
-tickets are published with native parent/blocking relationships. Implementation
-has not been authorized or started.
+tickets are published with native parent/blocking relationships. Work on #23's
+technical preparation is now authorized; feature implementation (#24–#28) has
+not been authorized or started.
 Published specification: https://github.com/razzeee/flatpak-rs/issues/22.
 See `local-update-specification.md` for the local publication snapshot.
 
@@ -129,7 +130,13 @@ Do not replace enforcement or storage behavior with mocks.
   Clippy, workflow linting and Rust tests. No machine-power-loss or production
   readiness claim is made.
 
-## Specification and implementation preparation still required
+## Technical preparation follow-up (#23)
+
+The concrete protocol, storage/recovery decisions and validation obligations are
+now captured in `local-update-protocol.md`, `local-update-storage.md` and
+`local-update-validation.md`. These refine the approved behavior without adding
+implemented update support. The following were the preparation obligations from
+the interview; real-service proof remains part of the implementation tickets.
 
 - Write the exact bounded/versioned plan and reply/error shapes and CLI/Varlink
   spellings. A submitted plan is input to validate, not publisher authentication,
@@ -143,9 +150,8 @@ Do not replace enforcement or storage behavior with mocks.
   the agreed test seam. Publish the specification and blocker-linked tickets
   through GitHub Issues before implementation.
 
-These are engineering/specification tasks, not approval to start coding or new
-product scope. Shared-understanding confirmation and specification/ticket
-publication were approved; implementation requires separate approval.
+Shared-understanding confirmation, specification/ticket publication and technical
+preparation #23 were approved. Feature implementation requires separate approval.
 
 ## Published implementation graph
 
