@@ -47,3 +47,15 @@ _Avoid_: Update job, reservation
 **Runtime**:
 A separately distributed execution environment required by an application.
 _Avoid_: Host environment
+
+**Remote**:
+A configured source for obtaining distributed application or runtime artifacts, distinct from the collection identity of those artifacts.
+_Avoid_: Collection (when referring to a configured source)
+
+**Publisher authorization**:
+The user's authorization for a signing key to publish artifacts for a specified collection.
+_Avoid_: Collection identity (when referring to publisher trust)
+
+**Remote installation plan**:
+A proposed fresh installation identifying an application variant, exact application and compatible runtime revisions, and their explicitly selected trusted providers.
+_Avoid_: Update plan (when installing a previously absent variant)

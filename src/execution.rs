@@ -65,6 +65,8 @@ pub struct Run {
     pub command: Vec<String>,
     pub memory_mib: Option<u64>,
     pub pids: Option<u64>,
+    #[serde(default)]
+    pub wayland: Option<String>,
 }
 
 struct Output {

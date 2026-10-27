@@ -67,8 +67,8 @@ impl Output {
 }
 
 pub fn run(args: &[String]) -> Result<i32, Box<dyn std::error::Error>> {
-    if args.len() < 6 {
-        return Err("usage: flatpak-rs run COLLECTION APP ARCH BRANCH [--memory-mib N] [--pids N] -- COMMAND [ARG...]".into());
+    if args.len() < 4 {
+        return Err("usage: flatpak-rs run COLLECTION APP ARCH BRANCH [--memory-mib N] [--pids N] [--wayland NAME] [-- COMMAND ARG...]".into());
     }
     let variant = Variant {
         collection: args[0].clone(),
@@ -78,19 +78,26 @@ pub fn run(args: &[String]) -> Result<i32, Box<dyn std::error::Error>> {
     };
     let mut memory_mib = 256u64;
     let mut pids = 64u64;
+    let mut wayland = None;
     let mut index = 4;
     while args.get(index).is_some_and(|s| s != "--") {
-        let value: u64 = args.get(index + 1).ok_or("missing limit value")?.parse()?;
+        let value = args.get(index + 1).ok_or("missing run option value")?;
         match args[index].as_str() {
-            "--memory-mib" => memory_mib = value,
-            "--pids" => pids = value,
+            "--memory-mib" => memory_mib = value.parse()?,
+            "--pids" => pids = value.parse()?,
+            "--wayland" if wayland.is_none() => wayland = Some(value.clone()),
             _ => return Err("unknown run option".into()),
         }
         index += 2;
     }
-    if args.get(index).map(String::as_str) != Some("--") || args.len() <= index + 1 {
-        return Err("run requires -- COMMAND".into());
-    }
+    let command = if index == args.len() {
+        &[][..]
+    } else {
+        if args.len() <= index + 1 {
+            return Err("empty explicit command".into());
+        }
+        &args[index + 1..]
+    };
     let stdout = duplicate(1)?;
     let stderr = duplicate(2)?;
     // Pin stdin before socket creation: a closed fd 0 must never become the
@@ -108,7 +115,7 @@ pub fn run(args: &[String]) -> Result<i32, Box<dyn std::error::Error>> {
     wire::send(
         &mut stream,
         &json!({"method": "org.flatpakrs.Manager.Run", "more": true,
-        "parameters": {"variant": variant, "command": args[index + 1..], "memory_mib": memory_mib, "pids": pids}}),
+        "parameters": {"variant": variant, "command": command, "memory_mib": memory_mib, "pids": pids, "wayland":wayland}}),
     )?;
     CANCEL.store(false, Ordering::Relaxed);
     // SAFETY: handlers perform only a lock-free atomic store, no I/O or allocation.

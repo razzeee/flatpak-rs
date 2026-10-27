@@ -119,6 +119,7 @@ fn dispatch(request: Value, installation: &Installation) -> Option<Value> {
         | "org.flatpakrs.Manager.GetRecoveryStatus"
         | "org.flatpakrs.Manager.ListInstances"
         | "org.flatpakrs.Manager.ListRuntimes"
+        | "org.flatpakrs.Manager.ListRemotes"
         | "org.varlink.service.GetInfo"
             if !parameters.is_empty() =>
         {
@@ -128,6 +129,21 @@ fn dispatch(request: Value, installation: &Installation) -> Option<Value> {
             )
         }
         "org.flatpakrs.Manager.GetHostStatus" => json!({"parameters": crate::host::status()}),
+        "org.flatpakrs.Manager.ListRemotes" => {
+            operation::<Value, _>(Value::Object(parameters.clone()), |_| {
+                installation.remotes()
+            })
+        }
+        "org.flatpakrs.Manager.AddRemote" => {
+            operation(Value::Object(parameters.clone()), |request| {
+                installation.add_remote(request)
+            })
+        }
+        "org.flatpakrs.Manager.DisableRemote" => {
+            operation(Value::Object(parameters.clone()), |request| {
+                installation.disable_remote(request)
+            })
+        }
         "org.flatpakrs.Manager.ListInstances" => {
             json!({"parameters": {"instances": installation.instances()}})
         }
@@ -170,6 +186,18 @@ fn dispatch(request: Value, installation: &Installation) -> Option<Value> {
                     }
                 },
             }
+        }
+        "org.flatpakrs.Manager.ApplyInstall" => {
+            operation(Value::Object(parameters.clone()), |request| {
+                installation.apply_install(request)
+            })
+        }
+        "org.flatpakrs.Manager.PlanInstall" => {
+            operation(Value::Object(parameters.clone()), |request| {
+                installation
+                    .plan_install(request)
+                    .map(|plan| json!({"plan":plan}))
+            })
         }
         "org.flatpakrs.Manager.ApplyUpdate" => {
             if parameters.len() != 1 || !parameters.get("plan").is_some_and(Value::is_object) {
@@ -230,6 +258,9 @@ fn operation<T: serde::de::DeserializeOwned, R: serde::Serialize>(
             Ok(result) => json!({"parameters": result}),
             Err(e) => {
                 let detail: String = e.to_string().chars().take(2048).collect();
+                if e.is::<crate::installation::remote::OutcomeUncertain>() {
+                    return json!({"error":"org.flatpakrs.Manager.RemoteOutcomeUncertain", "parameters":{"detail":detail}});
+                }
                 json!({"error": "org.flatpakrs.Manager.OperationFailed", "parameters": {"detail": detail}})
             }
         },

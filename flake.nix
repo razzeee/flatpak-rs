@@ -11,6 +11,7 @@
       cargoLock.lockFile = ./Cargo.lock;
       nativeBuildInputs = [ pkgs.pkg-config ];
       buildInputs = [ pkgs.ostree pkgs.glib ];
+      nativeCheckInputs = [ pkgs.python3 pkgs.gnupg pkgs.ostree ];
       # Real-process tests may consult user-session tools; isolate their HOME.
       preCheck = ''
         export HOME="$TMPDIR/test-home"
@@ -25,6 +26,7 @@
     };
   in {
     packages.${system}.default = package;
+    lib.calculatorAcceptance = calculator: import ./tests/vm.nix { inherit pkgs package calculator; };
     checks.${system} = {
       rust = package.overrideAttrs (old: {
         pname = "flatpak-rs-rust-checks";

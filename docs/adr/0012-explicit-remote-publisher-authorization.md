@@ -1,0 +1,3 @@
+# Separate remote location from publisher authorization
+
+The remote graphical milestone adds verified remote installation using an explicit signing-key authorization for a collection, bootstrapped for Flathub from its official HTTPS repository descriptor. A saved remote installation plan pins the complete application/runtime selection and explicit providers, but application of the plan rechecks current trust rather than treating a collection name or saved file as authority. This permits repeatable retries without implicitly trusting mirrors, changed keys, or newly resolved refs; comprehensive replay protection remains deferred.

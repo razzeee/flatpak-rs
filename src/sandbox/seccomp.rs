@@ -1,7 +1,7 @@
 use std::io;
 
 #[cfg(target_arch = "x86_64")]
-pub(super) fn install() -> io::Result<()> {
+pub(super) fn install(graphical: bool) -> io::Result<()> {
     fn statement(code: u16, k: u32) -> libc::sock_filter {
         libc::sock_filter {
             code,
@@ -57,6 +57,33 @@ pub(super) fn install() -> io::Result<()> {
         jump(libc::SYS_clone3 as u32, 0, 1),
         statement(0x06, 0x00050000 | libc::ENOSYS as u32),
     ];
+    if graphical {
+        // socket() is restricted to AF_UNIX. Its pathname namespace is the
+        // sandbox filesystem; abstract names are in the private network ns.
+        filter.extend([
+            jump(libc::SYS_socket as u32, 0, 4),
+            statement(0x20, 16),
+            jump(libc::AF_UNIX as u32, 0, 1),
+            statement(0x06, allow),
+            statement(0x06, deny),
+        ]);
+        for number in [
+            libc::SYS_connect,
+            libc::SYS_sendmsg,
+            libc::SYS_recvmsg,
+            libc::SYS_sendto,
+            libc::SYS_recvfrom,
+            libc::SYS_getsockopt,
+            libc::SYS_setsockopt,
+            libc::SYS_getsockname,
+            libc::SYS_getpeername,
+            libc::SYS_shutdown,
+            libc::SYS_memfd_create,
+        ] {
+            filter.push(jump(number as u32, 0, 1));
+            filter.push(statement(0x06, allow));
+        }
+    }
     // Native architecture only. Unlisted syscalls remain denied, including all
     // network, mount, namespace, kernel instrumentation and ptrace interfaces.
     let allowed = [
@@ -201,7 +228,7 @@ pub(super) fn install() -> io::Result<()> {
 }
 
 #[cfg(not(target_arch = "x86_64"))]
-pub(super) fn install() -> io::Result<()> {
+pub(super) fn install(_graphical: bool) -> io::Result<()> {
     Err(io::Error::other(
         "no reviewed syscall policy for this architecture",
     ))

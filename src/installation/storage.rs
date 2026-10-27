@@ -197,9 +197,18 @@ impl Source {
         // libostree returns a generic input stream. Avoid GIO load_contents'
         // file-stream-only query_info path, and bound the actual read as well.
         let mut contents = Vec::new();
-        let stream = file
-            .read(gio::Cancellable::NONE)?
-            .upcast::<gio::InputStream>();
+        // OstreeRepoFile implements read with a GInputStream rather than the
+        // GFileInputStream promised by GIO's generated binding.
+        let stream: gio::InputStream = unsafe {
+            use glib::translate::*;
+            let mut error = std::ptr::null_mut();
+            let pointer =
+                gio::ffi::g_file_read(file.to_glib_none().0, std::ptr::null_mut(), &mut error);
+            if !error.is_null() {
+                return Err(glib::Error::from_glib_full(error).into());
+            }
+            from_glib_full(pointer.cast::<gio::ffi::GInputStream>())
+        };
         loop {
             let bytes = stream.read_bytes(4096, gio::Cancellable::NONE)?;
             if bytes.is_empty() {
@@ -257,6 +266,42 @@ pub(super) fn validate(
             return Err("artifact name does not match selected identity".into());
         }
         for section in metadata.groups().iter() {
+            if let Some(extension) = section.strip_prefix("Extension ")
+                && omitted_extension(
+                    revision,
+                    extension,
+                    metadata.string(section, "directory")?.as_str(),
+                )
+            {
+                for key in metadata.keys(section)?.iter() {
+                    if !matches!(
+                        key.as_str(),
+                        "directory"
+                            | "version"
+                            | "versions"
+                            | "subdirectories"
+                            | "subdirectory-suffix"
+                            | "no-autodownload"
+                            | "autodelete"
+                            | "locale-subset"
+                            | "add-ld-path"
+                            | "merge-dirs"
+                            | "download-if"
+                            | "enable-if"
+                            | "autoprune-unless"
+                    ) {
+                        return Err(
+                            format!("unsupported structural requirement: {section}.{key}").into(),
+                        );
+                    }
+                }
+                if diagnostics.len() < 32 {
+                    diagnostics.push(format!(
+                        "omitted {extension}; outside software-rendered Calculator baseline"
+                    ));
+                }
+                continue;
+            }
             if section.starts_with("Extension ")
                 || matches!(
                     section.as_str(),
@@ -313,4 +358,53 @@ pub(super) fn validate(
         );
     }
     Ok(diagnostics)
+}
+
+// Deliberately bounded compatibility profile, not general extension resolution.
+fn omitted_extension(revision: &Revision, extension: &str, directory: &str) -> bool {
+    if revision.variant.id == "org.gnome.Calculator" {
+        return matches!(
+            (extension, directory),
+            ("org.gnome.Calculator.Locale", "share/runtime/locale")
+                | ("org.gnome.Calculator.Debug", "lib/debug")
+        );
+    }
+    if revision.variant.id != "org.gnome.Platform" || revision.variant.branch != "51" {
+        return false;
+    }
+    matches!(
+        (extension, directory),
+        ("org.gnome.Platform.Locale", "share/runtime/locale")
+            | ("org.freedesktop.Platform.GL", "lib/x86_64-linux-gnu/GL")
+            | (
+                "org.freedesktop.Platform.GL.Debug",
+                "lib/debug/usr/lib/x86_64-linux-gnu/GL"
+            )
+            | (
+                "org.freedesktop.Platform.VulkanLayer",
+                "lib/extensions/vulkan"
+            )
+            | ("org.freedesktop.Platform.Timezones", "share/zoneinfo")
+            | (
+                "org.freedesktop.Platform.GStreamer",
+                "lib/extensions/gstreamer-1.0"
+            )
+            | (
+                "org.freedesktop.Platform.Icontheme",
+                "share/runtime/share/icons"
+            )
+            | ("org.gtk.Gtk3theme", "share/runtime/share/themes")
+            | (
+                "org.freedesktop.Platform.VAAPI.Intel",
+                "lib/x86_64-linux-gnu/dri/intel-vaapi-driver"
+            )
+            | (
+                "org.freedesktop.Platform.VAAPI.nvidia",
+                "lib/x86_64-linux-gnu/dri/nvidia-vaapi-driver"
+            )
+            | (
+                "org.freedesktop.Platform.codecs-extra",
+                "lib/x86_64-linux-gnu/codecs-extra"
+            )
+    )
 }
