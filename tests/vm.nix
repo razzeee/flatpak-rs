@@ -46,6 +46,8 @@ let fixtures = pkgs.runCommand "flatpak-rs-install-fixtures" {
     systemd.user.sockets.flatpak-rs.wantedBy = [ "sockets.target" ];
     environment.etc."varlink-probe.py".source = ./varlink-probe.py;
     environment.etc."remote-fixture.py".source = ./remote-fixture.py;
+    environment.etc."remote-busybox".source = "${pkgs.pkgsStatic.busybox}/bin/busybox";
+    environment.etc."remote-acceptance.py".source = ./remote-acceptance.py;
     environment.etc."graphical-fixtures".source = import ./graphical-fixtures.nix { inherit pkgs; };
     environment.etc."install-fixtures".source = fixtures;
     environment.etc."foreground-probe.py".source = ./foreground-probe.py;
@@ -117,6 +119,7 @@ let fixtures = pkgs.runCommand "flatpak-rs-install-fixtures" {
     machine.succeed(alice("flatpak-rs status"))
 
     exec(${builtins.toJSON (builtins.readFile ./remote-vm.py)})
+    exec(${builtins.toJSON (builtins.readFile ./remote-extended-vm.py)})
     exec(${builtins.toJSON (builtins.readFile ./graphical-vm.py)})
     exec(${builtins.toJSON (builtins.readFile ./install-vm.py)})
     exec(${builtins.toJSON (builtins.readFile ./recovery-vm.py)})

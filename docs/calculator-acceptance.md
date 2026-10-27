@@ -30,9 +30,10 @@ The latter retains the screenshots, exact VM plan and application log. Portable
 Nix required fresh invocations after its `/homeless-shelter` purity error;
 these errors occurred between builds, separately from the passing VM tests.
 
-The broader remote fault checklist is not fully covered by these results:
-interrupted transfers, concurrent installs, remote-specific lost replies/timeouts,
-and actual remote-install storage exhaustion still need dedicated acceptance.
+The broader remote fault checklist was completed in the subsequent
+[remote acceptance run](remote-acceptance.md), covering interrupted transfers,
+concurrent installs, remote-specific lost replies/timeouts, and actual
+remote-install storage exhaustion. Manual GNOME result confirmation remains open.
 
 ## Manual reproduction
 

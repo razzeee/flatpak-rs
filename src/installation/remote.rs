@@ -462,6 +462,7 @@ impl Installation {
             prepared.checkout(&plan.runtime.commit, &stage.join("runtime"))?;
             drop(prepared);
             super::remove_tree(&objects)?;
+            super::checkpoint("remote-checkout");
             let installed = super::Installed {
                 app: plan.app,
                 runtime: plan.runtime,

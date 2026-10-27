@@ -84,6 +84,14 @@ rename is reported as RemoteOutcomeUncertain. Artifacts and management requests
 cannot enable these faults. The independent HTTP fixture can pause content
 delivery to test client loss and concurrent authorization withdrawal.
 
+`FLATPAK_RS_INSTALL_STOP_AFTER=remote-checkout` pauses after preparing both
+checkouts but before writing the selected pair. The VM uses this point to fill a
+separate ext4 installation filesystem, verify a real ENOSPC failure, and retry
+after freeing space. This host-only checkpoint does not change request semantics.
+The extended remote acceptance also exercises the CLI's actual 300-second read
+timeout with a transport proxy withholding a successful real-service reply;
+production timeouts are not shortened for the test.
+
 ## Bounded Calculator compatibility profile
 
 Calculator locale/debug declarations and GNOME Platform 51's locale, GL/debug,
