@@ -10,7 +10,8 @@ type Variant (collection: string, id: string, arch: string, branch: string)
 type Revision (collection: string, id: string, arch: string, branch: string, commit: string)
 method ListInstances() -> (instances: []Variant)
 # Streaming Run owns its connection; input/control calls are oneway on that connection.
-method Run(variant: Variant, command: []string, memory_mib: ?int, pids: ?int) -> (kind: string, data: ?string, exit_status: ?int)
+# An empty command selects Application.command from the installed metadata.
+method Run(variant: Variant, command: []string, memory_mib: ?int, pids: ?int, wayland: ?string) -> (kind: string, data: ?string, exit_status: ?int)
 method WriteInput(data: string) -> ()
 method CloseInput() -> ()
 method Cancel() -> ()
@@ -21,6 +22,16 @@ method Uninstall(collection: string, id: string, arch: string, branch: string) -
 method DeleteData(collection: string, id: string, arch: string, branch: string) -> (removed: bool)
 method RemoveRuntime(collection: string, id: string, arch: string, branch: string) -> (removed: bool)
 method ListRuntimes() -> (runtimes: []Revision)
+
+type Remote (name: string, collection: string, url: string, fingerprints: []string, generation: string, enabled: bool)
+method ListRemotes() -> (remotes: []Remote)
+method AddRemote(name: string, collection: string, descriptor: string, replace: bool) -> (name: string, collection: string, url: string, fingerprints: []string, generation: string, enabled: bool)
+method DisableRemote(name: string) -> (name: string, collection: string, url: string, fingerprints: []string, generation: string, enabled: bool)
+type Provider (name: string, generation: string)
+type RemoteInstallPlan (format_version: int, app: Revision, runtime: Revision, app_provider: Provider, runtime_provider: Provider)
+method PlanInstall(remote: string, id: string, arch: string, branch: string, runtime_remote: string) -> (plan: RemoteInstallPlan)
+method ApplyInstall(plan: RemoteInstallPlan) -> (status: string, installed: Installed)
+error RemoteOutcomeUncertain(detail: string)
 
 error OperationFailed(detail: string)
 

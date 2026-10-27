@@ -1,0 +1,3 @@
+# Add explicit Wayland access for the graphical demonstrator
+
+The remote graphical milestone extends the initial no-host-sockets execution contract to permit an explicitly selected Wayland compositor socket, with the compositor becoming part of the trusted boundary. The first workload uses software rendering and keeps host home, network, GPU, X11, and host session-bus access unavailable, making a real graphical demonstration possible without authorizing general desktop integration. Permission declarations do not themselves grant this access, and failure to establish the revised confinement contract still prevents execution.

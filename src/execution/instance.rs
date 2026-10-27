@@ -37,15 +37,21 @@ impl Instance {
     /// Validate and claim a variant, enforce limits, then enroll the helper
     /// behind its configuration barrier before allowing any payload execution.
     pub fn start(run: Run, installation: &installation::Installation) -> Result<(Self, Pipes)> {
-        if run.command.is_empty() || run.command.iter().any(|arg| arg.contains('\0')) {
+        if run.command.iter().any(|arg| arg.contains('\0')) {
             return Err("missing/invalid command".into());
         }
+        let display = run.wayland.as_deref().map(pin_display).transpose()?;
         let memory = run.memory_mib.unwrap_or(256);
         let pids = run.pids.unwrap_or(64);
         if !(16..=1024).contains(&memory) || !(4..=256).contains(&pids) {
             return Err("limits require 16–1024 MiB and 4–256 processes".into());
         }
         let deployment = installation.acquire(run.variant)?;
+        let command = if run.command.is_empty() {
+            vec![deployment.default_command()?]
+        } else {
+            run.command
+        };
         let group = Group::new(memory, pids).map_err(|e| format!("required cgroup setup: {e}; require Delegate=memory pids and DelegateSubgroup=supervisor"))?;
         let config = sandbox::Config {
             app: deployment.app,
@@ -53,7 +59,8 @@ impl Instance {
             home: deployment.home,
             root: group.root.clone(),
             cgroup: group.path.clone(),
-            command: run.command,
+            command,
+            wayland: display.is_some(),
         };
         let mut instance = Self {
             child: None,
@@ -62,6 +69,7 @@ impl Instance {
         };
         let (mut config_writer, config_reader) = UnixStream::pair()?;
         let config_fd = config_reader.as_raw_fd();
+        let display_fd = display.as_ref().map(AsRawFd::as_raw_fd);
         let helper = std::env::current_exe()?.with_file_name("flatpak-rs-sandbox");
         let mut command = Command::new(helper);
         command
@@ -75,6 +83,11 @@ impl Instance {
                 if libc::dup2(config_fd, 3) == -1
                     || libc::fcntl(3, libc::F_SETFD, 0) == -1
                     || libc::syscall(libc::SYS_close_range, 4u32, u32::MAX, 4u32) == -1
+                {
+                    return Err(io::Error::last_os_error());
+                }
+                if let Some(fd) = display_fd
+                    && (libc::dup2(fd, 4) == -1 || libc::fcntl(4, libc::F_SETFD, 0) == -1)
                 {
                     return Err(io::Error::last_os_error());
                 }
@@ -151,6 +164,42 @@ impl Instance {
         drop(self.lease.take());
         Ok(())
     }
+}
+
+fn pin_display(name: &str) -> Result<OwnedFd> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt};
+    if !name.starts_with("wayland-")
+        || name.len() > 100
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+    {
+        return Err("Wayland endpoint must be a single wayland-NAME filename".into());
+    }
+    let management = crate::socket_path()?;
+    let runtime = management
+        .parent()
+        .and_then(|p| p.parent())
+        .ok_or("missing runtime directory")?;
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_PATH | libc::O_NOFOLLOW)
+        .open(runtime.join(name))
+        .map_err(|e| format!("Wayland endpoint unavailable: {e}"))?;
+    let metadata = file.metadata()?;
+    // SAFETY: querying the current UID has no preconditions.
+    if !metadata.file_type().is_socket() || metadata.uid() != unsafe { libc::getuid() } {
+        return Err("Wayland endpoint must be an owned socket, not a symlink".into());
+    }
+    // Reserve a descriptor above the fixed helper configuration/display slots so
+    // dup2(config, 3) cannot overwrite it in the pre-exec setup.
+    // SAFETY: fcntl duplicates the live pinned inode descriptor.
+    let fd = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 10) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+    // SAFETY: successful fcntl returned a new owned descriptor.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
 impl Drop for Instance {

@@ -19,6 +19,7 @@ pub(crate) struct Config {
     pub root: PathBuf,
     pub cgroup: PathBuf,
     pub command: Vec<String>,
+    pub wayland: bool,
 }
 
 fn syscall(result: libc::c_int, operation: &str) -> Result<()> {
@@ -221,6 +222,34 @@ pub fn run() -> Result<i32> {
         &config.root.join("home/user"),
         libc::MS_NOSUID | libc::MS_NODEV,
     )?;
+    if config.wayland {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+        // The inherited O_PATH references the original mount namespace. Linux
+        // rejects binding that foreign mount after CLONE_NEWNS. Reopen within
+        // this namespace and compare with the still-pinned inode before binding
+        // the new descriptor. Path replacement fails rather than substituting
+        // an endpoint, and replacement after reopening cannot affect the mount.
+        let original = fs::metadata("/proc/self/fd/4")?;
+        let display = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH | libc::O_NOFOLLOW)
+            .open(fs::read_link("/proc/self/fd/4")?)?;
+        let reopened = display.metadata()?;
+        if original.dev() != reopened.dev() || original.ino() != reopened.ino() {
+            return Err("Wayland endpoint changed during sandbox setup".into());
+        }
+        let private_runtime = config.root.join("run/user/0");
+        fs::create_dir_all(&private_runtime)?;
+        fs::set_permissions(&private_runtime, fs::Permissions::from_mode(0o700))?;
+        let target = private_runtime.join("wayland-0");
+        File::create(&target)?;
+        bind(
+            Path::new(&format!("/proc/self/fd/{}", display.as_raw_fd())),
+            &target,
+            libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
+        )?;
+    }
     mount(
         None,
         &config.root.join("tmp"),
@@ -342,8 +371,10 @@ pub fn run() -> Result<i32> {
         unsafe { libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 0u32) } as i32,
         "close_range",
     )?;
-    seccomp::install().map_err(|error| format!("required seccomp filter: {error}"))?;
-    let error = Command::new(&config.command[0])
+    seccomp::install(config.wayland)
+        .map_err(|error| format!("required seccomp filter: {error}"))?;
+    let mut command = Command::new(&config.command[0]);
+    command
         .args(&config.command[1..])
         .env_clear()
         .env("HOME", "/home/user")
@@ -354,7 +385,19 @@ pub fn run() -> Result<i32> {
         .env("TMPDIR", "/tmp")
         .env("XDG_DATA_HOME", "/home/user/.local/share")
         .env("XDG_CONFIG_HOME", "/home/user/.config")
-        .env("XDG_CACHE_HOME", "/home/user/.cache")
-        .exec();
+        .env("XDG_CACHE_HOME", "/home/user/.cache");
+    if config.wayland {
+        command
+            .env("XDG_RUNTIME_DIR", "/run/user/0")
+            .env("WAYLAND_DISPLAY", "wayland-0")
+            .env("GDK_BACKEND", "wayland")
+            .env("GSK_RENDERER", "cairo")
+            .env("LD_LIBRARY_PATH", "/app/lib:/usr/lib/x86_64-linux-gnu")
+            .env("XDG_DATA_DIRS", "/app/share:/usr/share")
+            .env("FONTCONFIG_PATH", "/usr/etc/fonts")
+            .env("FONTCONFIG_FILE", "/usr/etc/fonts/fonts.conf")
+            .env("GSETTINGS_BACKEND", "keyfile");
+    }
+    let error = command.exec();
     Err(error.into())
 }

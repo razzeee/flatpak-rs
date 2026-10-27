@@ -11,6 +11,7 @@ use std::sync::{
 };
 
 mod lifecycle;
+pub mod remote;
 mod storage;
 pub mod update;
 pub use lifecycle::{Removed, Runtimes};
@@ -26,6 +27,7 @@ pub struct Installation {
     discarded: AtomicUsize,
     running: Running,
     update_faults: update::Faults,
+    remote_authorization: Mutex<()>,
 }
 
 /// Private transaction scope: holds serialization over a validated root whose
@@ -52,6 +54,7 @@ impl Installation {
             discarded: AtomicUsize::new(0),
             running: Arc::new(Mutex::new(HashSet::new())),
             update_faults: update::Faults::from_environment(),
+            remote_authorization: Mutex::new(()),
         }
     }
 
@@ -194,6 +197,41 @@ pub(crate) struct Deployment {
     pub app: PathBuf,
     pub runtime: PathBuf,
     pub home: PathBuf,
+}
+
+impl Deployment {
+    pub(crate) fn default_command(&self) -> Result<String> {
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(
+                self.app
+                    .parent()
+                    .ok_or("missing app deployment")?
+                    .join("metadata"),
+            )?;
+        if !file.metadata()?.is_file() {
+            return Err("application metadata must be regular".into());
+        }
+        let mut bytes = Vec::new();
+        file.take(64 * 1024 + 1).read_to_end(&mut bytes)?;
+        if bytes.len() > 64 * 1024 {
+            return Err("oversized application metadata".into());
+        }
+        let metadata = glib::KeyFile::new();
+        metadata.load_from_data(std::str::from_utf8(&bytes)?, glib::KeyFileFlags::NONE)?;
+        let command = metadata.string("Application", "command")?;
+        if command.is_empty()
+            || command.len() > 200
+            || !command.as_bytes()[0].is_ascii_alphanumeric()
+            || !command
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+        {
+            return Err("default command must be one executable basename, without arguments or shell syntax".into());
+        }
+        Ok(format!("/app/bin/{command}"))
+    }
 }
 
 impl Installation {

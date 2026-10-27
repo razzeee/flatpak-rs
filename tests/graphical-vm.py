@@ -1,0 +1,22 @@
+machine.wait_for_file("/run/user/1000/wayland-1")
+machine.succeed(alice("flatpak-rs install /etc/graphical-fixtures org.example.Graphical org.example.Graphical x86_64 stable org.example.Graphical org.example.Platform stable"))
+machine.fail(alice("flatpak-rs run org.example.Graphical org.example.Graphical x86_64 stable --wayland wayland-missing -- /app/bin/graphical"))
+machine.succeed(alice("ln -s /run/user/1000/wayland-1 /run/user/1000/wayland-symlink"))
+machine.fail(alice("flatpak-rs run org.example.Graphical org.example.Graphical x86_64 stable --wayland wayland-symlink -- /app/bin/graphical"))
+machine.succeed(alice("systemd-run --user --unit=graphical-client sh -c 'flatpak-rs run org.example.Graphical org.example.Graphical x86_64 stable --wayland wayland-1 > /home/alice/graphical.out 2>/home/alice/graphical.err'"))
+try:
+    machine.wait_until_succeeds(alice("swaymsg -s /run/user/1000/sway.sock -t get_tree | grep 'flatpak-rs graphical fixture'"), timeout=30)
+except Exception:
+    print(machine.succeed("cat /home/alice/graphical.err"))
+    raise
+machine.send_key("a")
+machine.succeed(alice("swaymsg -s /run/user/1000/sway.sock seat seat0 cursor set 100 100"))
+machine.succeed(alice("swaymsg -s /run/user/1000/sway.sock seat seat0 cursor press button1"))
+machine.succeed(alice("swaymsg -s /run/user/1000/sway.sock seat seat0 cursor release button1"))
+machine.wait_until_succeeds("grep keyboard-and-pointer /home/alice/graphical.out")
+machine.succeed(alice("WAYLAND_DISPLAY=wayland-1 grim /home/alice/graphical.png"))
+machine.succeed("python -c \"from PIL import Image; assert (0,255,0) in Image.open('/home/alice/graphical.png').convert('RGB').getdata()\"")
+machine.screenshot("graphical-fixture-input")
+machine.copy_from_machine("/home/alice/graphical.png")
+machine.succeed(alice("systemctl --user stop graphical-client"))
+machine.wait_until_succeeds(alice("flatpak-rs instances | grep -F '\"instances\": []'"))

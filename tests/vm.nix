@@ -1,4 +1,4 @@
-{ pkgs, package }:
+{ pkgs, package, calculator ? null }:
 let fixtures = pkgs.runCommand "flatpak-rs-install-fixtures" {
   nativeBuildInputs = [ pkgs.flatpak pkgs.ostree pkgs.pkgsStatic.stdenv.cc ];
   FIXTURE_SHELL = "${pkgs.pkgsStatic.busybox}/bin/busybox";
@@ -11,17 +11,42 @@ let fixtures = pkgs.runCommand "flatpak-rs-install-fixtures" {
   name = "flatpak-rs-service";
   nodes.machine = { ... }: {
     virtualisation.memorySize = 2048;
+    virtualisation.diskSize = if calculator != null then 8192 else 1024;
     virtualisation.cores = 2;
+    virtualisation.qemu.options = [ "-vga none -device virtio-gpu-pci" ];
+    services.getty.autologinUser = "alice";
+    programs.sway.enable = true;
+    environment.variables.WLR_RENDERER = "pixman";
+    programs.bash.loginShellInit = ''
+      if [ "$(tty)" = /dev/tty1 ]; then
+        export SWAYSOCK=/run/user/1000/sway.sock
+        exec sway --config /etc/sway-test.conf
+      fi
+    '';
+    environment.etc."sway-test.conf".text = ''
+      xwayland disable
+      output * bg #222222 solid_color
+      input * xkb_layout us
+      seat seat0 hide_cursor 0
+      default_border none
+    '';
     # The test harness defaults to compulsory panic-on-OOM, including memcg OOM.
     # Exercise normal cgroup-scoped OOM killing instead, without removing limits.
     boot.kernel.sysctl."vm.panic_on_oom" = pkgs.lib.mkForce 0;
     boot.kernelModules = [ "loop" ];
     users.users.alice = { isNormalUser = true; uid = 1000; linger = true; };
     users.users.bob = { isNormalUser = true; uid = 1001; };
-    environment.systemPackages = [ package pkgs.python3 pkgs.util-linux pkgs.flatpak pkgs.ostree pkgs.e2fsprogs ];
+    environment.systemPackages = [ package (pkgs.python3.withPackages (p: [ p.pillow ])) pkgs.util-linux pkgs.flatpak pkgs.ostree pkgs.e2fsprogs pkgs.gnupg pkgs.grim pkgs.tesseract ];
+    imports = pkgs.lib.optionals (calculator != null) [{ environment.etc = {
+      "calculator-repo".source = calculator.repo;
+      "calculator.flatpakrepo".source = calculator.descriptor;
+      "calculator-plan.json".source = calculator.plan;
+    }; }];
     systemd.packages = [ package ];
     systemd.user.sockets.flatpak-rs.wantedBy = [ "sockets.target" ];
     environment.etc."varlink-probe.py".source = ./varlink-probe.py;
+    environment.etc."remote-fixture.py".source = ./remote-fixture.py;
+    environment.etc."graphical-fixtures".source = import ./graphical-fixtures.nix { inherit pkgs; };
     environment.etc."install-fixtures".source = fixtures;
     environment.etc."foreground-probe.py".source = ./foreground-probe.py;
     environment.etc."owner-death-probe.py".source = ./owner-death-probe.py;
@@ -46,7 +71,7 @@ let fixtures = pkgs.runCommand "flatpak-rs-install-fixtures" {
       DelegateSubgroup=
     '';
   };
-  testScript = ''
+  testScript = if calculator != null then builtins.readFile ./calculator-vm.py else ''
     import json
     import shlex
 
@@ -91,6 +116,8 @@ let fixtures = pkgs.runCommand "flatpak-rs-install-fixtures" {
     assert machine.succeed(alice("systemctl --user show flatpak-rs.service -p MainPID --value")).strip() == pid
     machine.succeed(alice("flatpak-rs status"))
 
+    exec(${builtins.toJSON (builtins.readFile ./remote-vm.py)})
+    exec(${builtins.toJSON (builtins.readFile ./graphical-vm.py)})
     exec(${builtins.toJSON (builtins.readFile ./install-vm.py)})
     exec(${builtins.toJSON (builtins.readFile ./recovery-vm.py)})
     exec(${builtins.toJSON (builtins.readFile ./update-vm.py)})
