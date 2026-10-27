@@ -1,5 +1,5 @@
 """Remote authorization through the socket-activated service, with real signatures."""
-machine.succeed(alice("systemd-run --user --unit=remote-fixture sh -c 'python /etc/remote-fixture.py /home/alice/remote-fixture > /home/alice/remote-info.json'"))
+machine.succeed(alice("systemd-run --user --unit=remote-fixture sh -c 'python /etc/remote-fixture.py /home/alice/remote-fixture /etc/remote-busybox > /home/alice/remote-info.json'"))
 machine.wait_until_succeeds("test -s /home/alice/remote-info.json")
 remote_info = json.loads(machine.succeed("cat /home/alice/remote-info.json"))
 remote = json.loads(machine.succeed(alice("flatpak-rs remote-add fixture org.example.Remote " + remote_info["descriptor"])))
@@ -15,6 +15,7 @@ applied = json.loads(machine.succeed(alice("flatpak-rs apply-install /home/alice
 assert applied["status"] == "installed"
 assert applied["installed"]["app"] == plan["app"]
 assert applied["installed"]["runtime"] == plan["runtime"]
+assert machine.succeed(alice("flatpak-rs run org.example.Remote org.example.RemoteApp x86_64 stable")) == "remote-payload\nverified-runtime\n"
 for boundary in ["prepared", "published"]:
     machine.succeed(alice("systemctl --user reset-failed flatpak-rs.service flatpak-rs.socket"))
     machine.succeed(alice("flatpak-rs uninstall org.example.Remote org.example.RemoteApp x86_64 stable"))
@@ -51,10 +52,11 @@ for site in ["write-selection", "sync-selection", "sync-publication"]:
     assert json.loads(machine.succeed(alice("flatpak-rs apply-install /home/alice/remote-plan.json")))["installed"] == applied["installed"]
 machine.fail(alice("flatpak-rs remote-add wrong org.example.Remote " + remote_info["wrong_descriptor"]))
 machine.fail(alice("flatpak-rs remote-add wrong-collection org.example.Other " + remote_info["descriptor"]))
+machine.succeed("cp /home/alice/remote-fixture/repo/summary.sig /home/alice/remote-summary.sig")
 machine.succeed("printf tampered > /home/alice/remote-fixture/repo/summary.sig")
 machine.fail(alice("flatpak-rs remote-replace fixture org.example.Remote " + remote_info["descriptor"]))
 assert json.loads(machine.succeed(alice("flatpak-rs remotes")))["remotes"] == [remote]
+machine.succeed("cp /home/alice/remote-summary.sig /home/alice/remote-fixture/repo/summary.sig")
 disabled = json.loads(machine.succeed(alice("flatpak-rs remote-disable fixture")))
 assert disabled["enabled"] is False
-machine.succeed(alice("systemctl --user stop remote-fixture"))
 assert json.loads(machine.succeed(alice("flatpak-rs apply-install /home/alice/remote-plan.json")))["status"] == "unchanged"
